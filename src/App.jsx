@@ -321,10 +321,28 @@ export default function App() {
       const url = await uploadPhoto(editNewPhotos[i].file, editingId, i + allUrls.length);
       if (url) allUrls.push(url);
     }
+    // Update this item (location-specific + shared fields)
     await supabase.from("items").update({
       names, room, specific: editSpecific || null, notes: editNotes.trim() || null,
       photo_urls: allUrls, photo_url: allUrls[0] || null
     }).eq("id", editingId);
+
+    // Find sibling items (same name set, different room) and update shared fields
+    const originalItem = items.find(i => i.id === editingId);
+    if (originalItem) {
+      const siblings = items.filter(i =>
+        i.id !== editingId &&
+        i.names.some(n => originalItem.names.map(x => x.toLowerCase()).includes(n.toLowerCase()))
+      );
+      if (siblings.length > 0) {
+        const siblingIds = siblings.map(i => i.id);
+        await supabase.from("items").update({
+          names, notes: editNotes.trim() || null,
+          photo_urls: allUrls, photo_url: allUrls[0] || null
+        }).in("id", siblingIds);
+      }
+    }
+
     setEditingId(null); setEditNewPhotos([]); setEditExistingPhotos([]);
     showToast("Updated"); setSaving(false); fetchItems();
   }
@@ -473,8 +491,17 @@ export default function App() {
                     {addSuggestions.map(item => (
                       <button key={item.id} style={s.suggestion} onMouseDown={() => selectAddSuggestion(item)}>
                         <div style={s.suggestionLeft}>
-                          <div style={s.suggestionName}>{highlight(item.names[0], newNames[0])}</div>
-                          {item.names.length > 1 && <div style={s.suggestionSub}>{item.names.slice(1).join(" · ")}</div>}
+                          {(() => {
+                            const q = newNames[0].toLowerCase();
+                            const matched = item.names.find(n => n.toLowerCase().includes(q)) || item.names[0];
+                            const others = item.names.filter(n => n !== matched);
+                            return (
+                              <>
+                                <div style={s.suggestionName}>{highlight(matched, newNames[0])}</div>
+                                {others.length > 0 && <div style={s.suggestionSub}>{others.join(" · ")}</div>}
+                              </>
+                            );
+                          })()}
                         </div>
                         <div style={s.suggestionRoom}>{item.room}</div>
                       </button>
