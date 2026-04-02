@@ -2,23 +2,23 @@ import { useState, useEffect, useRef } from "react";
 
 const STORAGE_KEY = "er-stockroom-inventory-v2";
 
-function loadItems() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveItemsToStorage(items) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
-  } catch {}
-}
+const STOCKROOMS = [
+  "Red Bin Room",
+  "Red Stockroom",
+  "Red Med Room",
+  "Yellow Stockroom",
+  "Yellow Med Room",
+  "Yellow Hallway Pyxis",
+  "Ortho Stockroom",
+  "Green Stockroom",
+  "Green Med Room",
+  "Peds Stockroom",
+  "Peds Mini Stockroom",
+  "Peds Med Room",
+];
 
 export default function App() {
-  const [items, setItems] = useState(() => loadItems());
+  const [items, setItems] = useState([]);
   const [query, setQuery] = useState("");
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [selectedItem, setSelectedItem] = useState(null);
@@ -26,13 +26,17 @@ export default function App() {
   const [newNames, setNewNames] = useState([""]);
   const [newRoom, setNewRoom] = useState("");
   const [newNotes, setNewNotes] = useState("");
+  const [newSpecific, setNewSpecific] = useState("");
   const [editingId, setEditingId] = useState(null);
   const [editNames, setEditNames] = useState([""]);
   const [editRoom, setEditRoom] = useState("");
   const [editNotes, setEditNotes] = useState("");
+  const [editSpecific, setEditSpecific] = useState("");
   const [toast, setToast] = useState(null);
   const searchRef = useRef(null);
   const searchWrapRef = useRef(null);
+
+  useEffect(() => { loadFromStorage(); }, []);
 
   useEffect(() => {
     function handleClick(e) {
@@ -43,9 +47,18 @@ export default function App() {
     return () => document.removeEventListener("mousedown", handleClick);
   }, []);
 
-  function saveItems(updated) {
+  async function loadFromStorage() {
+    try {
+      const result = await window.storage.get(STORAGE_KEY);
+      if (result) setItems(JSON.parse(result.value));
+    } catch {}
+  }
+
+  async function saveItems(updated) {
     setItems(updated);
-    saveItemsToStorage(updated);
+    try {
+      await window.storage.set(STORAGE_KEY, JSON.stringify(updated));
+    } catch {}
   }
 
   function showToast(msg, type = "success") {
@@ -81,10 +94,11 @@ export default function App() {
     const names = newNames.map(n => n.trim()).filter(Boolean);
     const room = newRoom.trim();
     if (names.length === 0 || !room) return showToast("Add at least one name and a room", "error");
-    saveItems([...items, { id: Date.now(), names, room, notes: newNotes.trim() }]);
+    saveItems([...items, { id: Date.now(), names, room, notes: newNotes.trim(), specific: newSpecific }]);
     setNewNames([""]);
     setNewRoom("");
     setNewNotes("");
+    setNewSpecific("");
     showToast(`"${names[0]}" added`);
   }
 
@@ -105,6 +119,7 @@ export default function App() {
     setEditNames([...item.names]);
     setEditRoom(item.room);
     setEditNotes(item.notes || "");
+    setEditSpecific(item.specific || "");
   }
 
   function updateEditName(i, val) {
@@ -123,7 +138,7 @@ export default function App() {
     const names = editNames.map(n => n.trim()).filter(Boolean);
     const room = editRoom.trim();
     if (names.length === 0 || !room) return;
-    saveItems(items.map(i => i.id === editingId ? { ...i, names, room, notes: editNotes.trim() } : i));
+    saveItems(items.map(i => i.id === editingId ? { ...i, names, room, notes: editNotes.trim(), specific: editSpecific } : i));
     setEditingId(null);
     showToast("Updated");
   }
@@ -133,9 +148,7 @@ export default function App() {
     showToast("Item removed");
   }
 
-  const rooms = [...new Set(items.map(i => i.room))].sort();
-
-  function highlight(text, q) {
+function highlight(text, q) {
     if (!q) return text;
     const idx = text.toLowerCase().indexOf(q.toLowerCase());
     if (idx === -1) return text;
@@ -160,8 +173,8 @@ export default function App() {
           <div style={s.logo}>
             <span style={s.cross}>✚</span>
             <div>
-              <div style={s.title}>StockRoom</div>
-              <div style={s.subtitle}>Stamford ER</div>
+              <div style={s.title}>Item Finder</div>
+              <div style={s.subtitle}>Stamford ED</div>
             </div>
           </div>
           <div style={s.tabs}>
@@ -201,7 +214,7 @@ export default function App() {
                           <div style={s.suggestionName}>{highlight(matched, query)}</div>
                           {!isFirstName && <div style={s.suggestionSub}>also: {item.names[0]}</div>}
                         </div>
-                        <div style={s.suggestionRoom}>{item.room}</div>
+                        <div style={s.suggestionRoom}>{item.room}{item.specific ? ` (${item.specific})` : ""}</div>
                       </button>
                     );
                   })}
@@ -224,7 +237,9 @@ export default function App() {
               <div style={s.resultCard}>
                 <div style={s.resultTop}>
                   <div style={s.resultNames}>{selectedItem.names.join("  ·  ")}</div>
-                  <div style={s.roomBadge}>{selectedItem.room}</div>
+                  <div style={s.roomBadge}>
+                    {selectedItem.room}{selectedItem.specific ? ` (${selectedItem.specific})` : ""}
+                  </div>
                 </div>
                 {selectedItem.notes ? (
                   <div style={s.notesBox}>
@@ -265,12 +280,18 @@ export default function App() {
                 </div>
               ))}
               <button style={s.addNameBtn} onClick={addNewNameField}>+ Add another name</button>
-              <label style={s.label}>Stock Room</label>
-              <input style={s.input} placeholder="e.g. Stockroom A"
-                value={newRoom} onChange={e => setNewRoom(e.target.value)} list="rooms-list" />
-              <datalist id="rooms-list">{rooms.map(r => <option key={r} value={r} />)}</datalist>
+              <label style={s.label}>Location</label>
+              <select style={s.select} value={newRoom} onChange={e => setNewRoom(e.target.value)}>
+                <option value="">Select a location...</option>
+                {STOCKROOMS.map(r => <option key={r} value={r}>{r}</option>)}
+              </select>
+              <label style={s.label}>More Specific <span style={s.optional}>(optional)</span></label>
+              <select style={s.select} value={newSpecific} onChange={e => setNewSpecific(e.target.value)}>
+                <option value="">Select...</option>
+                {["Front","Back","Left","Right","Pyxis"].map(o => <option key={o} value={o}>{o}</option>)}
+              </select>
               <label style={s.label}>Notes <span style={s.optional}>(optional)</span></label>
-              <textarea style={s.textarea} placeholder="e.g. Left side of the room, bottom shelf"
+              <textarea style={s.textarea} placeholder="e.g. Used to stop bleeding via compression"
                 value={newNotes} onChange={e => setNewNotes(e.target.value)} rows={2} />
               <button style={s.primaryBtn} onClick={addItem}>Add Item</button>
             </div>
@@ -300,13 +321,20 @@ export default function App() {
                       </div>
                     ))}
                     <button style={s.addNameBtn} onClick={addEditNameField}>+ Add another name</button>
-                    <label style={{ ...s.label, marginTop: 12 }}>Stock Room</label>
-                    <input style={{ ...s.input, marginBottom: 8 }} value={editRoom}
-                      onChange={e => setEditRoom(e.target.value)} list="rooms-list" />
+                    <label style={{ ...s.label, marginTop: 12 }}>Location</label>
+                    <select style={{ ...s.select, marginBottom: 8 }} value={editRoom} onChange={e => setEditRoom(e.target.value)}>
+                      <option value="">Select a location...</option>
+                      {STOCKROOMS.map(r => <option key={r} value={r}>{r}</option>)}
+                    </select>
+                    <label style={s.label}>More Specific <span style={s.optional}>(optional)</span></label>
+                    <select style={{ ...s.select, marginBottom: 8 }} value={editSpecific} onChange={e => setEditSpecific(e.target.value)}>
+                      <option value="">Select...</option>
+                      {["Front","Back","Left","Right","Pyxis"].map(o => <option key={o} value={o}>{o}</option>)}
+                    </select>
                     <label style={s.label}>Notes <span style={s.optional}>(optional)</span></label>
                     <textarea style={{ ...s.textarea, marginBottom: 12 }} value={editNotes}
                       onChange={e => setEditNotes(e.target.value)} rows={2}
-                      placeholder="e.g. Left side of the room, bottom shelf" />
+                      placeholder="e.g. Used to stop bleeding via compression" />
                     <div style={s.editActions}>
                       <button style={s.saveBtn} onClick={saveEdit}>Save</button>
                       <button style={s.cancelBtn} onClick={() => setEditingId(null)}>Cancel</button>
@@ -318,7 +346,7 @@ export default function App() {
                       {item.names.map((n, i) => (
                         <div key={i} style={s.manageName}>{n}</div>
                       ))}
-                      <div style={s.manageRoom}>{item.room}</div>
+                      <div style={s.manageRoom}>{item.room}{item.specific ? ` (${item.specific})` : ""}</div>
                       {item.notes ? <div style={s.manageNotes}>📝 {item.notes}</div> : null}
                     </div>
                     <div style={s.manageActions}>
@@ -391,6 +419,7 @@ const s = {
   removeNameBtn: { background: "transparent", border: `1px solid #3d1a1a`, color: "#f85149", borderRadius: 6, padding: "8px 10px", cursor: "pointer", fontSize: 12, flexShrink: 0 },
   addNameBtn: { background: "transparent", border: `1px dashed ${C.border}`, color: C.muted, borderRadius: 8, padding: "8px", cursor: "pointer", fontSize: 13, marginTop: 2, marginBottom: 4, width: "100%" },
   input: { background: C.bg, border: `1.5px solid ${C.border}`, borderRadius: 8, color: C.text, fontSize: 15, padding: "11px 13px", outline: "none", width: "100%", boxSizing: "border-box" },
+  select: { background: C.bg, border: `1.5px solid ${C.border}`, borderRadius: 8, color: C.text, fontSize: 15, padding: "11px 13px", outline: "none", width: "100%", boxSizing: "border-box", appearance: "none", backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%238b949e' d='M6 8L1 3h10z'/%3E%3C/svg%3E")`, backgroundRepeat: "no-repeat", backgroundPosition: "right 13px center" },
   textarea: { background: C.bg, border: `1.5px solid ${C.border}`, borderRadius: 8, color: C.text, fontSize: 14, padding: "11px 13px", outline: "none", width: "100%", boxSizing: "border-box", resize: "vertical", fontFamily: "inherit", lineHeight: 1.5 },
   primaryBtn: { marginTop: 14, background: C.accent, border: "none", borderRadius: 8, color: "#fff", fontSize: 15, fontWeight: 600, padding: "13px", cursor: "pointer", width: "100%" },
   manageCard: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: "12px 14px" },
