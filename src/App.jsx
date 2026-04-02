@@ -245,6 +245,18 @@ export default function App() {
       await supabase.from("items").update({ photo_urls: allUrls, photo_url: allUrls[0] }).eq("id", data.id);
     }
 
+    // Propagate shared fields to sibling items (same name, different room)
+    const siblings = items.filter(i =>
+      i.names.some(n => names.map(x => x.toLowerCase()).includes(n.toLowerCase()))
+    );
+    if (siblings.length > 0) {
+      const siblingIds = siblings.map(i => i.id);
+      await supabase.from("items").update({
+        names, notes: newNotes.trim() || null,
+        photo_urls: allUrls, photo_url: allUrls[0] || null
+      }).in("id", siblingIds);
+    }
+
     setNewNames([""]);setNewRoom("");setNewSpecific("");setNewNotes("");
     setNewPhotos([]);setSourcePhotoUrls([]);
     showToast(`"${names[0]}" added`);
