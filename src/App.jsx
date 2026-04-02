@@ -110,9 +110,10 @@ export default function App() {
   const [addSuggestions, setAddSuggestions] = useState([]);
   const [showAddSuggestions, setShowAddSuggestions] = useState(false);
 
-  // Edit form
   const [editingId, setEditingId] = useState(null); // single item id for location edits
   const [editingGroupKey, setEditingGroupKey] = useState(null); // group key for shared field edits
+  const [editingGroup, setEditingGroup] = useState([]); // current group being edited
+  const [newLocationRows, setNewLocationRows] = useState([]); // [{room, specific}]
   const [editNames, setEditNames] = useState([""]);
   const [editRoom, setEditRoom] = useState("");
   const [editSpecific, setEditSpecific] = useState("");
@@ -327,37 +328,38 @@ export default function App() {
 
   async function saveEdit() {
     const names = editNames.map(n => n.trim()).filter(Boolean);
-    const room = editRoom.trim();
-    if (names.length === 0 || !room) return;
+    if (names.length === 0) return;
     setSaving(true);
+
     let allUrls = [...editExistingPhotos];
     for (let i = 0; i < editNewPhotos.length; i++) {
       const url = await uploadPhoto(editNewPhotos[i].file, editingId, i + allUrls.length);
       if (url) allUrls.push(url);
     }
-    // Update this item (location-specific + shared fields)
-    await supabase.from("items").update({
-      names, room, specific: editSpecific || null, notes: editNotes.trim() || null,
-      photo_urls: allUrls, photo_url: allUrls[0] || null
-    }).eq("id", editingId);
 
-    // Find sibling items (same name set, different room) and update shared fields
-    const originalItem = items.find(i => i.id === editingId);
-    if (originalItem) {
-      const siblings = items.filter(i =>
-        i.id !== editingId &&
-        i.names.some(n => originalItem.names.map(x => x.toLowerCase()).includes(n.toLowerCase()))
-      );
-      if (siblings.length > 0) {
-        const siblingIds = siblings.map(i => i.id);
-        await supabase.from("items").update({
-          names, notes: editNotes.trim() || null,
-          photo_urls: allUrls, photo_url: allUrls[0] || null
-        }).in("id", siblingIds);
-      }
+    // Update ALL items in the group with shared fields
+    const groupIds = editingGroup.map(i => i.id);
+    if (groupIds.length > 0) {
+      await supabase.from("items").update({
+        names, notes: editNotes.trim() || null,
+        photo_urls: allUrls, photo_url: allUrls[0] || null
+      }).in("id", groupIds);
     }
 
-    setEditingId(null); setEditingGroupKey(null); setEditNewPhotos([]); setEditExistingPhotos([]);
+    // Insert any new location rows
+    const validNewLocations = newLocationRows.filter(r => r.room.trim());
+    if (validNewLocations.length > 0) {
+      await supabase.from("items").insert(
+        validNewLocations.map(r => ({
+          names, room: r.room, specific: r.specific || null,
+          notes: editNotes.trim() || null,
+          photo_urls: allUrls, photo_url: allUrls[0] || null
+        }))
+      );
+    }
+
+    setEditingId(null); setEditingGroupKey(null); setEditingGroup([]); setNewLocationRows([]);
+    setEditNewPhotos([]); setEditExistingPhotos([]);
     showToast("Updated"); setSaving(false); fetchItems();
   }
 
@@ -669,12 +671,40 @@ export default function App() {
                             <button style={s.deleteBtn} onClick={() => deleteItem(item.id)}>✕</button>
                           </div>
                         ))}
+                        {newLocationRows.map((row, i) => (
+                          <div key={`new-loc-${i}`} style={s.locationEditRow}>
+                            <select style={{ ...s.select, flex: 1, fontSize: 13, padding: "8px 10px" }}
+                              value={row.room}
+                              onChange={e => {
+                                const updated = [...newLocationRows];
+                                updated[i] = { ...updated[i], room: e.target.value };
+                                setNewLocationRows(updated);
+                              }}>
+                              <option value="">Select location...</option>
+                              {STOCKROOMS.map(r => <option key={r} value={r}>{r}</option>)}
+                            </select>
+                            <select style={{ ...s.select, width: 90, fontSize: 13, padding: "8px 8px" }}
+                              value={row.specific}
+                              onChange={e => {
+                                const updated = [...newLocationRows];
+                                updated[i] = { ...updated[i], specific: e.target.value };
+                                setNewLocationRows(updated);
+                              }}>
+                              <option value="">—</option>
+                              {SPECIFICS.map(o => <option key={o} value={o}>{o}</option>)}
+                            </select>
+                            <button style={s.deleteBtn} onClick={() => setNewLocationRows(newLocationRows.filter((_, idx) => idx !== i))}>✕</button>
+                          </div>
+                        ))}
+                        <button style={s.addNameBtn} onClick={() => setNewLocationRows([...newLocationRows, { room: "", specific: "" }])}>
+                          + Add another location
+                        </button>
 
                         <div style={{ ...s.editActions, marginTop: 12 }}>
                           <button style={{ ...s.saveBtn, opacity: saving ? 0.6 : 1 }} onClick={saveEdit} disabled={saving}>
                             {saving ? "Saving..." : "Save"}
                           </button>
-                          <button style={s.cancelBtn} onClick={() => { setEditingGroupKey(null); setEditingId(null); }}>Cancel</button>
+                          <button style={s.cancelBtn} onClick={() => { setEditingGroupKey(null); setEditingId(null); setEditingGroup([]); setNewLocationRows([]); }}>Cancel</button>
                         </div>
                       </div>
                     ) : (
@@ -701,10 +731,12 @@ export default function App() {
                             <button style={s.editBtn} onClick={() => {
                               setEditingGroupKey(groupKey);
                               setEditingId(group[0].id);
+                              setEditingGroup(group);
                               setEditNames([...group[0].names]);
                               setEditNotes(group[0].notes || "");
                               setEditExistingPhotos(photos);
                               setEditNewPhotos([]);
+                              setNewLocationRows([]);
                             }}>Edit</button>
                             <button style={s.deleteBtn} onClick={() => {
                               if (group.length === 1) {
