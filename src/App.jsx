@@ -11,7 +11,6 @@ const STOCKROOMS = [
   "Ortho Stockroom","Green Stockroom","Green Med Room",
   "Peds Stockroom","Peds Mini Stockroom","Peds Med Room",
 ];
-
 const SPECIFICS = ["Front","Back","Left","Right","Pyxis"];
 
 function compressImage(file, maxWidth = 800) {
@@ -33,31 +32,98 @@ function compressImage(file, maxWidth = 800) {
   });
 }
 
+function groupItems(items) {
+  const groups = [];
+  const visited = new Set();
+  for (const item of items) {
+    if (visited.has(item.id)) continue;
+    const related = items.filter(other =>
+      !visited.has(other.id) &&
+      other.names.some(n => item.names.map(x => x.toLowerCase()).includes(n.toLowerCase()))
+    );
+    related.forEach(r => visited.add(r.id));
+    groups.push(related);
+  }
+  return groups;
+}
+
+function getPhotoUrls(item) {
+  if (item.photo_urls && item.photo_urls.length > 0) return item.photo_urls;
+  if (item.photo_url) return [item.photo_url];
+  return [];
+}
+
+// Lightbox with prev/next toggling
+function Lightbox({ photos, startIndex, onClose }) {
+  const [idx, setIdx] = useState(startIndex || 0);
+  return (
+    <div style={s.lightboxOverlay} onClick={onClose}>
+      <div style={s.lightboxInner} onClick={e => e.stopPropagation()}>
+        <img src={photos[idx]} style={s.lightboxImg} />
+        {photos.length > 1 && (
+          <div style={s.lightboxNav}>
+            <button style={s.lightboxNavBtn} onClick={() => setIdx((idx - 1 + photos.length) % photos.length)}>‹</button>
+            <span style={s.lightboxCounter}>{idx + 1} / {photos.length}</span>
+            <button style={s.lightboxNavBtn} onClick={() => setIdx((idx + 1) % photos.length)}>›</button>
+          </div>
+        )}
+        <button style={s.lightboxClose} onClick={onClose}>✕</button>
+      </div>
+    </div>
+  );
+}
+
+// Thumbnail strip — shows first photo, click opens lightbox
+function PhotoStrip({ photos, onOpenLightbox }) {
+  if (!photos || photos.length === 0) return null;
+  return (
+    <div style={s.thumbStrip}>
+      {photos.map((url, i) => (
+        <div key={i} style={s.thumbWrap} onClick={() => onOpenLightbox(i)}>
+          <img src={url} style={s.thumb} />
+          {i === 0 && photos.length > 1 && (
+            <div style={s.thumbBadge}>+{photos.length - 1}</div>
+          )}
+        </div>
+      )).slice(0, 1)}
+    </div>
+  );
+}
+
 export default function App() {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
   const [showSuggestions, setShowSuggestions] = useState(false);
-  const [selectedItem, setSelectedItem] = useState(null);
+  const [selectedGroup, setSelectedGroup] = useState(null);
   const [view, setView] = useState("search");
+  const [lightbox, setLightbox] = useState(null); // { photos, index }
+
+  // Add form
   const [newNames, setNewNames] = useState([""]);
   const [newRoom, setNewRoom] = useState("");
   const [newSpecific, setNewSpecific] = useState("");
   const [newNotes, setNewNotes] = useState("");
-  const [newPhoto, setNewPhoto] = useState(null);
-  const [newPhotoPreview, setNewPhotoPreview] = useState(null);
+  const [newPhotos, setNewPhotos] = useState([]); // array of {file, preview}
+  const [sourcePhotoUrls, setSourcePhotoUrls] = useState([]);
+  const [addSuggestions, setAddSuggestions] = useState([]);
+  const [showAddSuggestions, setShowAddSuggestions] = useState(false);
+
+  // Edit form
   const [editingId, setEditingId] = useState(null);
   const [editNames, setEditNames] = useState([""]);
   const [editRoom, setEditRoom] = useState("");
   const [editSpecific, setEditSpecific] = useState("");
   const [editNotes, setEditNotes] = useState("");
-  const [editPhoto, setEditPhoto] = useState(null);
-  const [editPhotoPreview, setEditPhotoPreview] = useState(null);
+  const [editExistingPhotos, setEditExistingPhotos] = useState([]); // urls already saved
+  const [editNewPhotos, setEditNewPhotos] = useState([]); // new {file, preview}
+
   const [saving, setSaving] = useState(false);
-  const [lightbox, setLightbox] = useState(null);
   const [toast, setToast] = useState(null);
+
   const searchRef = useRef(null);
   const searchWrapRef = useRef(null);
+  const addSuggestWrapRef = useRef(null);
   const newPhotoRef = useRef(null);
   const editPhotoRef = useRef(null);
 
@@ -65,8 +131,8 @@ export default function App() {
 
   useEffect(() => {
     function handleClick(e) {
-      if (searchWrapRef.current && !searchWrapRef.current.contains(e.target))
-        setShowSuggestions(false);
+      if (searchWrapRef.current && !searchWrapRef.current.contains(e.target)) setShowSuggestions(false);
+      if (addSuggestWrapRef.current && !addSuggestWrapRef.current.contains(e.target)) setShowAddSuggestions(false);
     }
     document.addEventListener("mousedown", handleClick);
     return () => document.removeEventListener("mousedown", handleClick);
@@ -84,133 +150,35 @@ export default function App() {
     setTimeout(() => setToast(null), 2500);
   }
 
-  async function uploadPhoto(file, itemId) {
+  async function uploadPhoto(file, itemId, index) {
     const blob = await compressImage(file);
-    const path = `${itemId}-${Date.now()}.jpg`;
+    const path = `${itemId}-${Date.now()}-${index}.jpg`;
     const { error } = await supabase.storage.from("Photos").upload(path, blob, { contentType: "image/jpeg", upsert: true });
     if (error) return null;
-    const { data } = supabase.storage.from("Photos").getPublicUrl(path);
-    return data.publicUrl;
+    return supabase.storage.from("Photos").getPublicUrl(path).data.publicUrl;
   }
 
-  async function handleNewPhotoChange(e) {
-    const file = e.target.files[0];
-    if (!file) return;
-    setNewPhoto(file);
-    setNewPhotoPreview(URL.createObjectURL(file));
-  }
-
-  async function handleEditPhotoChange(e) {
-    const file = e.target.files[0];
-    if (!file) return;
-    setEditPhoto(file);
-    setEditPhotoPreview(URL.createObjectURL(file));
-  }
-
-  async function addItem() {
-    const names = newNames.map(n => n.trim()).filter(Boolean);
-    const room = newRoom.trim();
-    if (names.length === 0 || !room) return showToast("Add at least one name and a location", "error");
-    setSaving(true);
-    const tempId = Date.now();
-    let photo_url = null;
-    const { data, error } = await supabase.from("items").insert([{ names, room, specific: newSpecific || null, notes: newNotes.trim() || null, photo_url: null }]).select().single();
-    if (error) { showToast("Failed to save", "error"); setSaving(false); return; }
-    if (newPhoto) {
-      photo_url = await uploadPhoto(newPhoto, data.id);
-      if (photo_url) await supabase.from("items").update({ photo_url }).eq("id", data.id);
-    }
-    setNewNames([""]);
-    setNewRoom("");
-    setNewSpecific("");
-    setNewNotes("");
-    setNewPhoto(null);
-    setNewPhotoPreview(null);
-    showToast(`"${names[0]}" added`);
-    setSaving(false);
-    fetchItems();
-  }
-
-  function updateNewName(i, val) {
-    const updated = [...newNames];
-    updated[i] = val;
-    setNewNames(updated);
-  }
-
-  function addNewNameField() { setNewNames([...newNames, ""]); }
-  function removeNewNameField(i) {
-    if (newNames.length === 1) return;
-    setNewNames(newNames.filter((_, idx) => idx !== i));
-  }
-
-  function startEdit(item) {
-    setEditingId(item.id);
-    setEditNames([...item.names]);
-    setEditRoom(item.room);
-    setEditSpecific(item.specific || "");
-    setEditNotes(item.notes || "");
-    setEditPhoto(null);
-    setEditPhotoPreview(item.photo_url || null);
-  }
-
-  function updateEditName(i, val) {
-    const updated = [...editNames];
-    updated[i] = val;
-    setEditNames(updated);
-  }
-
-  function addEditNameField() { setEditNames([...editNames, ""]); }
-  function removeEditNameField(i) {
-    if (editNames.length === 1) return;
-    setEditNames(editNames.filter((_, idx) => idx !== i));
-  }
-
-  async function saveEdit() {
-    const names = editNames.map(n => n.trim()).filter(Boolean);
-    const room = editRoom.trim();
-    if (names.length === 0 || !room) return;
-    setSaving(true);
-    let photo_url = items.find(i => i.id === editingId)?.photo_url || null;
-    if (editPhoto) {
-      const url = await uploadPhoto(editPhoto, editingId);
-      if (url) photo_url = url;
-    }
-    await supabase.from("items").update({ names, room, specific: editSpecific || null, notes: editNotes.trim() || null, photo_url }).eq("id", editingId);
-    setEditingId(null);
-    setEditPhoto(null);
-    setEditPhotoPreview(null);
-    showToast("Updated");
-    setSaving(false);
-    fetchItems();
-  }
-
-  async function deleteItem(id) {
-    await supabase.from("items").delete().eq("id", id);
-    showToast("Item removed");
-    fetchItems();
-  }
-
+  // --- SEARCH ---
   const filtered = query.trim()
     ? items.filter(i => i.names.some(n => n.toLowerCase().includes(query.toLowerCase())))
     : [];
+  const filteredGroups = groupItems(filtered);
 
   function handleQueryChange(e) {
     const val = e.target.value;
     setQuery(val);
-    setSelectedItem(null);
+    setSelectedGroup(null);
     setShowSuggestions(val.trim().length > 0);
   }
 
-  function selectSuggestion(item) {
-    setSelectedItem(item);
-    setQuery(item.names[0]);
+  function selectSearchGroup(group) {
+    setSelectedGroup(group);
+    setQuery(group[0].names[0]);
     setShowSuggestions(false);
   }
 
   function handleClear() {
-    setQuery("");
-    setSelectedItem(null);
-    setShowSuggestions(false);
+    setQuery(""); setSelectedGroup(null); setShowSuggestions(false);
     searchRef.current?.focus();
   }
 
@@ -230,14 +198,163 @@ export default function App() {
     return item.room + (item.specific ? ` (${item.specific})` : "");
   }
 
+  // --- ADD SUGGESTIONS ---
+  function handleFirstNameChange(val) {
+    updateNewName(0, val);
+    if (val.trim().length > 0) {
+      const matches = items.filter(i => i.names.some(n => n.toLowerCase().includes(val.toLowerCase())));
+      const seen = new Set();
+      const unique = matches.filter(item => {
+        const key = item.names.slice().sort().join("|");
+        if (seen.has(key)) return false;
+        seen.add(key); return true;
+      });
+      setAddSuggestions(unique);
+      setShowAddSuggestions(unique.length > 0);
+    } else {
+      setAddSuggestions([]); setShowAddSuggestions(false);
+    }
+  }
+
+  function selectAddSuggestion(item) {
+    setNewNames([...item.names]);
+    setNewNotes(item.notes || "");
+    const urls = getPhotoUrls(item);
+    setSourcePhotoUrls(urls);
+    setNewPhotos([]);
+    setShowAddSuggestions(false);
+  }
+
+  // --- ADD ITEM ---
+  async function addItem() {
+    const names = newNames.map(n => n.trim()).filter(Boolean);
+    const room = newRoom.trim();
+    if (names.length === 0 || !room) return showToast("Add at least one name and a location", "error");
+    setSaving(true);
+    const { data, error } = await supabase.from("items").insert([{
+      names, room, specific: newSpecific || null, notes: newNotes.trim() || null, photo_url: null, photo_urls: []
+    }]).select().single();
+    if (error) { showToast("Failed to save", "error"); setSaving(false); return; }
+
+    let allUrls = [...sourcePhotoUrls];
+    for (let i = 0; i < newPhotos.length; i++) {
+      const url = await uploadPhoto(newPhotos[i].file, data.id, i);
+      if (url) allUrls.push(url);
+    }
+    if (allUrls.length > 0) {
+      await supabase.from("items").update({ photo_urls: allUrls, photo_url: allUrls[0] }).eq("id", data.id);
+    }
+
+    setNewNames([""]);setNewRoom("");setNewSpecific("");setNewNotes("");
+    setNewPhotos([]);setSourcePhotoUrls([]);
+    showToast(`"${names[0]}" added`);
+    setSaving(false);
+    fetchItems();
+  }
+
+  function updateNewName(i, val) {
+    const updated = [...newNames]; updated[i] = val; setNewNames(updated);
+  }
+  function addNewNameField() { setNewNames([...newNames, ""]); }
+  function removeNewNameField(i) {
+    if (newNames.length === 1) return;
+    setNewNames(newNames.filter((_, idx) => idx !== i));
+  }
+
+  function handleNewPhotoAdd(e) {
+    const files = Array.from(e.target.files);
+    const newEntries = files.map(file => ({ file, preview: URL.createObjectURL(file) }));
+    setNewPhotos(prev => [...prev, ...newEntries]);
+    e.target.value = "";
+  }
+
+  function removeNewPhoto(i) {
+    setNewPhotos(prev => prev.filter((_, idx) => idx !== i));
+  }
+
+  function removeSourcePhoto(i) {
+    setSourcePhotoUrls(prev => prev.filter((_, idx) => idx !== i));
+  }
+
+  // --- EDIT ---
+  function startEdit(item) {
+    setEditingId(item.id);
+    setEditNames([...item.names]);
+    setEditRoom(item.room);
+    setEditSpecific(item.specific || "");
+    setEditNotes(item.notes || "");
+    setEditExistingPhotos(getPhotoUrls(item));
+    setEditNewPhotos([]);
+  }
+
+  function updateEditName(i, val) {
+    const updated = [...editNames]; updated[i] = val; setEditNames(updated);
+  }
+  function addEditNameField() { setEditNames([...editNames, ""]); }
+  function removeEditNameField(i) {
+    if (editNames.length === 1) return;
+    setEditNames(editNames.filter((_, idx) => idx !== i));
+  }
+
+  function handleEditPhotoAdd(e) {
+    const files = Array.from(e.target.files);
+    const newEntries = files.map(file => ({ file, preview: URL.createObjectURL(file) }));
+    setEditNewPhotos(prev => [...prev, ...newEntries]);
+    e.target.value = "";
+  }
+
+  function removeEditExistingPhoto(i) {
+    setEditExistingPhotos(prev => prev.filter((_, idx) => idx !== i));
+  }
+
+  function removeEditNewPhoto(i) {
+    setEditNewPhotos(prev => prev.filter((_, idx) => idx !== i));
+  }
+
+  async function saveEdit() {
+    const names = editNames.map(n => n.trim()).filter(Boolean);
+    const room = editRoom.trim();
+    if (names.length === 0 || !room) return;
+    setSaving(true);
+    let allUrls = [...editExistingPhotos];
+    for (let i = 0; i < editNewPhotos.length; i++) {
+      const url = await uploadPhoto(editNewPhotos[i].file, editingId, i + allUrls.length);
+      if (url) allUrls.push(url);
+    }
+    await supabase.from("items").update({
+      names, room, specific: editSpecific || null, notes: editNotes.trim() || null,
+      photo_urls: allUrls, photo_url: allUrls[0] || null
+    }).eq("id", editingId);
+    setEditingId(null); setEditNewPhotos([]); setEditExistingPhotos([]);
+    showToast("Updated"); setSaving(false); fetchItems();
+  }
+
+  async function deleteItem(id) {
+    await supabase.from("items").delete().eq("id", id);
+    if (editingId === id) setEditingId(null);
+    showToast("Item removed"); fetchItems();
+  }
+
+  const searchDropdownEntries = filteredGroups.map(group => {
+    const matched = group.map(item => getMatchingName(item)).find(Boolean) || group[0].names[0];
+    return { group, matched };
+  });
+
+  // All photos from a group combined (deduplicated)
+  function groupPhotos(group) {
+    const seen = new Set();
+    const result = [];
+    for (const item of group) {
+      for (const url of getPhotoUrls(item)) {
+        if (!seen.has(url)) { seen.add(url); result.push(url); }
+      }
+    }
+    return result;
+  }
+
   return (
     <div style={s.root}>
-      {lightbox && (
-        <div style={s.lightboxOverlay} onClick={() => setLightbox(null)}>
-          <img src={lightbox} style={s.lightboxImg} onClick={e => e.stopPropagation()} />
-          <button style={s.lightboxClose} onClick={() => setLightbox(null)}>✕</button>
-        </div>
-      )}
+      {lightbox && <Lightbox photos={lightbox.photos} startIndex={lightbox.index} onClose={() => setLightbox(null)} />}
 
       <div style={s.header}>
         <div style={s.headerInner}>
@@ -275,24 +392,19 @@ export default function App() {
                 {query && <button style={s.clearBtn} onClick={handleClear}>✕</button>}
               </div>
 
-              {showSuggestions && filtered.length > 0 && (
+              {showSuggestions && searchDropdownEntries.length > 0 && (
                 <div style={s.dropdown}>
-                  {filtered.map(item => {
-                    const matched = getMatchingName(item);
-                    const isFirst = matched === item.names[0];
-                    return (
-                      <button key={item.id} style={s.suggestion} onMouseDown={() => selectSuggestion(item)}>
-                        <div style={s.suggestionLeft}>
-                          <div style={s.suggestionName}>{highlight(matched, query)}</div>
-                          {!isFirst && <div style={s.suggestionSub}>also: {item.names[0]}</div>}
-                        </div>
-                        <div style={s.suggestionRoom}>{locationLabel(item)}</div>
-                      </button>
-                    );
-                  })}
+                  {searchDropdownEntries.map(({ group, matched }, idx) => (
+                    <button key={idx} style={s.suggestion} onMouseDown={() => selectSearchGroup(group)}>
+                      <div style={s.suggestionLeft}>
+                        <div style={s.suggestionName}>{highlight(matched, query)}</div>
+                        {group[0].names.length > 1 && <div style={s.suggestionSub}>{group[0].names.filter(n => n !== matched).join(" · ")}</div>}
+                      </div>
+                      <div style={s.suggestionRoom}>{group.length > 1 ? `${group.length} locations` : locationLabel(group[0])}</div>
+                    </button>
+                  ))}
                 </div>
               )}
-
               {showSuggestions && query.trim() && filtered.length === 0 && (
                 <div style={s.dropdown}>
                   <div style={s.noMatch}>No match — <span style={s.noMatchLink} onMouseDown={() => { setNewNames([query]); setView("add"); setShowSuggestions(false); }}>add "{query}"</span></div>
@@ -300,23 +412,33 @@ export default function App() {
               )}
             </div>
 
-            {selectedItem && !showSuggestions && (
-              <div style={s.resultCard}>
-                <div style={s.resultTop}>
-                  <div style={s.resultNames}>{selectedItem.names.join("  ·  ")}</div>
-                  <div style={s.roomBadge}>{locationLabel(selectedItem)}</div>
+            {selectedGroup && !showSuggestions && (() => {
+              const photos = groupPhotos(selectedGroup);
+              return (
+                <div style={s.resultCard}>
+                  <div style={s.resultNames}>{selectedGroup[0].names.join("  ·  ")}</div>
+                  {selectedGroup.map((item, idx) => (
+                    <div key={item.id} style={s.locationRow}>
+                      <div style={s.roomBadge}>{locationLabel(item)}</div>
+                    </div>
+                  ))}
+                  {selectedGroup[0].notes && (
+                    <div style={s.notesBox}>
+                      <span style={s.notesIcon}>📝</span>
+                      <span style={s.notesText}>{selectedGroup[0].notes}</span>
+                    </div>
+                  )}
+                  {photos.length > 0 && (
+                    <div style={s.thumbStrip}>
+                      <div style={s.thumbWrap} onClick={() => setLightbox({ photos, index: 0 })}>
+                        <img src={photos[0]} style={s.resultThumb} />
+                        {photos.length > 1 && <div style={s.thumbBadge}>+{photos.length - 1}</div>}
+                      </div>
+                    </div>
+                  )}
                 </div>
-                {selectedItem.notes && (
-                  <div style={s.notesBox}>
-                    <span style={s.notesIcon}>📝</span>
-                    <span style={s.notesText}>{selectedItem.notes}</span>
-                  </div>
-                )}
-                {selectedItem.photo_url && (
-                  <img src={selectedItem.photo_url} style={s.resultPhoto} onClick={() => setLightbox(selectedItem.photo_url)} />
-                )}
-              </div>
-            )}
+              );
+            })()}
 
             {!query && loading && <div style={s.hint}>Loading...</div>}
             {!query && !loading && items.length === 0 && (
@@ -338,13 +460,33 @@ export default function App() {
             <div style={s.formCard}>
               <div style={s.formTitle}>Add New Item</div>
               <label style={s.label}>Names</label>
-              {newNames.map((name, i) => (
-                <div key={i} style={s.nameRow}>
-                  <input style={{ ...s.input, flex: 1 }}
-                    placeholder={i === 0 ? "e.g. Butterfly needle" : "e.g. Winged infusion set"}
-                    value={name} onChange={e => updateNewName(i, e.target.value)}
-                    autoFocus={i === newNames.length - 1 && i > 0} />
-                  {newNames.length > 1 && <button style={s.removeNameBtn} onClick={() => removeNewNameField(i)}>✕</button>}
+              <div style={{ position: "relative" }} ref={addSuggestWrapRef}>
+                <div style={s.nameRow}>
+                  <input style={{ ...s.input, flex: 1 }} placeholder="e.g. Butterfly needle"
+                    value={newNames[0]} onChange={e => handleFirstNameChange(e.target.value)}
+                    onFocus={() => newNames[0].trim() && addSuggestions.length > 0 && setShowAddSuggestions(true)}
+                    autoComplete="off" />
+                  {newNames.length > 1 && <button style={s.removeNameBtn} onClick={() => removeNewNameField(0)}>✕</button>}
+                </div>
+                {showAddSuggestions && (
+                  <div style={{ ...s.dropdown, position: "absolute", top: "calc(100% + 2px)", zIndex: 60 }}>
+                    {addSuggestions.map(item => (
+                      <button key={item.id} style={s.suggestion} onMouseDown={() => selectAddSuggestion(item)}>
+                        <div style={s.suggestionLeft}>
+                          <div style={s.suggestionName}>{highlight(item.names[0], newNames[0])}</div>
+                          {item.names.length > 1 && <div style={s.suggestionSub}>{item.names.slice(1).join(" · ")}</div>}
+                        </div>
+                        <div style={s.suggestionRoom}>{item.room}</div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              {newNames.slice(1).map((name, i) => (
+                <div key={i + 1} style={s.nameRow}>
+                  <input style={{ ...s.input, flex: 1 }} placeholder="e.g. Winged infusion set"
+                    value={name} onChange={e => updateNewName(i + 1, e.target.value)} />
+                  <button style={s.removeNameBtn} onClick={() => removeNewNameField(i + 1)}>✕</button>
                 </div>
               ))}
               <button style={s.addNameBtn} onClick={addNewNameField}>+ Add another name</button>
@@ -365,13 +507,26 @@ export default function App() {
               <textarea style={s.textarea} placeholder="e.g. Used to stop bleeding via compression"
                 value={newNotes} onChange={e => setNewNotes(e.target.value)} rows={2} />
 
-              <label style={s.label}>Photo <span style={s.optional}>(optional)</span></label>
-              {newPhotoPreview && <img src={newPhotoPreview} style={s.photoPreview} />}
-              <button style={s.photoBtn} onClick={() => newPhotoRef.current.click()}>
-                {newPhotoPreview ? "Change Photo" : "📷 Take or Upload Photo"}
-              </button>
+              <label style={s.label}>Photos <span style={s.optional}>(optional)</span></label>
+              {(sourcePhotoUrls.length > 0 || newPhotos.length > 0) && (
+                <div style={s.photoGrid}>
+                  {sourcePhotoUrls.map((url, i) => (
+                    <div key={`src-${i}`} style={s.photoGridItem}>
+                      <img src={url} style={s.photoGridImg} onClick={() => setLightbox({ photos: sourcePhotoUrls, index: i })} />
+                      <button style={s.photoRemoveBtn} onClick={() => removeSourcePhoto(i)}>✕</button>
+                    </div>
+                  ))}
+                  {newPhotos.map((p, i) => (
+                    <div key={`new-${i}`} style={s.photoGridItem}>
+                      <img src={p.preview} style={s.photoGridImg} />
+                      <button style={s.photoRemoveBtn} onClick={() => removeNewPhoto(i)}>✕</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <button style={s.photoBtn} onClick={() => newPhotoRef.current.click()}>📷 Add Photo</button>
               <input ref={newPhotoRef} type="file" accept="image/*" capture="environment"
-                style={{ display: "none" }} onChange={handleNewPhotoChange} />
+                style={{ display: "none" }} onChange={handleNewPhotoAdd} />
 
               <button style={{ ...s.primaryBtn, opacity: saving ? 0.6 : 1 }} onClick={addItem} disabled={saving}>
                 {saving ? "Saving..." : "Add Item"}
@@ -390,72 +545,91 @@ export default function App() {
                 <div style={s.emptyText}>No items to manage yet.</div>
               </div>
             )}
-            {items.map(item => (
-              <div key={item.id} style={s.manageCard}>
-                {editingId === item.id ? (
-                  <div style={s.editRow}>
-                    <label style={s.label}>Names</label>
-                    {editNames.map((name, i) => (
-                      <div key={i} style={s.nameRow}>
-                        <input style={{ ...s.input, flex: 1, marginBottom: 6 }}
-                          value={name} onChange={e => updateEditName(i, e.target.value)} />
-                        {editNames.length > 1 && <button style={s.removeNameBtn} onClick={() => removeEditNameField(i)}>✕</button>}
-                      </div>
-                    ))}
-                    <button style={s.addNameBtn} onClick={addEditNameField}>+ Add another name</button>
+            {items.map(item => {
+              const photos = getPhotoUrls(item);
+              return (
+                <div key={item.id} style={s.manageCard}>
+                  {editingId === item.id ? (
+                    <div style={s.editRow}>
+                      <label style={s.label}>Names</label>
+                      {editNames.map((name, i) => (
+                        <div key={i} style={s.nameRow}>
+                          <input style={{ ...s.input, flex: 1, marginBottom: 6 }}
+                            value={name} onChange={e => updateEditName(i, e.target.value)} />
+                          {editNames.length > 1 && <button style={s.removeNameBtn} onClick={() => removeEditNameField(i)}>✕</button>}
+                        </div>
+                      ))}
+                      <button style={s.addNameBtn} onClick={addEditNameField}>+ Add another name</button>
 
-                    <label style={{ ...s.label, marginTop: 12 }}>Location</label>
-                    <select style={{ ...s.select, marginBottom: 8 }} value={editRoom} onChange={e => setEditRoom(e.target.value)}>
-                      <option value="">Select a location...</option>
-                      {STOCKROOMS.map(r => <option key={r} value={r}>{r}</option>)}
-                    </select>
+                      <label style={{ ...s.label, marginTop: 12 }}>Location</label>
+                      <select style={{ ...s.select, marginBottom: 8 }} value={editRoom} onChange={e => setEditRoom(e.target.value)}>
+                        <option value="">Select a location...</option>
+                        {STOCKROOMS.map(r => <option key={r} value={r}>{r}</option>)}
+                      </select>
 
-                    <label style={s.label}>More Specific <span style={s.optional}>(optional)</span></label>
-                    <select style={{ ...s.select, marginBottom: 8 }} value={editSpecific} onChange={e => setEditSpecific(e.target.value)}>
-                      <option value="">Select...</option>
-                      {SPECIFICS.map(o => <option key={o} value={o}>{o}</option>)}
-                    </select>
+                      <label style={s.label}>More Specific <span style={s.optional}>(optional)</span></label>
+                      <select style={{ ...s.select, marginBottom: 8 }} value={editSpecific} onChange={e => setEditSpecific(e.target.value)}>
+                        <option value="">Select...</option>
+                        {SPECIFICS.map(o => <option key={o} value={o}>{o}</option>)}
+                      </select>
 
-                    <label style={s.label}>Notes <span style={s.optional}>(optional)</span></label>
-                    <textarea style={{ ...s.textarea, marginBottom: 8 }} value={editNotes}
-                      onChange={e => setEditNotes(e.target.value)} rows={2}
-                      placeholder="e.g. Used to stop bleeding via compression" />
+                      <label style={s.label}>Notes <span style={s.optional}>(optional)</span></label>
+                      <textarea style={{ ...s.textarea, marginBottom: 8 }} value={editNotes}
+                        onChange={e => setEditNotes(e.target.value)} rows={2}
+                        placeholder="e.g. Used to stop bleeding via compression" />
 
-                    <label style={s.label}>Photo <span style={s.optional}>(optional)</span></label>
-                    {editPhotoPreview && <img src={editPhotoPreview} style={s.photoPreview} />}
-                    <button style={{ ...s.photoBtn, marginBottom: 12 }} onClick={() => editPhotoRef.current.click()}>
-                      {editPhotoPreview ? "Change Photo" : "📷 Take or Upload Photo"}
-                    </button>
-                    <input ref={editPhotoRef} type="file" accept="image/*" capture="environment"
-                      style={{ display: "none" }} onChange={handleEditPhotoChange} />
-
-                    <div style={s.editActions}>
-                      <button style={{ ...s.saveBtn, opacity: saving ? 0.6 : 1 }} onClick={saveEdit} disabled={saving}>
-                        {saving ? "Saving..." : "Save"}
-                      </button>
-                      <button style={s.cancelBtn} onClick={() => setEditingId(null)}>Cancel</button>
-                    </div>
-                  </div>
-                ) : (
-                  <div style={s.manageRow}>
-                    <div style={{ flex: 1, minWidth: 0, display: "flex", gap: 10, alignItems: "center" }}>
-                      {item.photo_url && (
-                        <img src={item.photo_url} style={s.manageThumb} onClick={() => setLightbox(item.photo_url)} />
+                      <label style={s.label}>Photos <span style={s.optional}>(optional)</span></label>
+                      {(editExistingPhotos.length > 0 || editNewPhotos.length > 0) && (
+                        <div style={s.photoGrid}>
+                          {editExistingPhotos.map((url, i) => (
+                            <div key={`ex-${i}`} style={s.photoGridItem}>
+                              <img src={url} style={s.photoGridImg} onClick={() => setLightbox({ photos: editExistingPhotos, index: i })} />
+                              <button style={s.photoRemoveBtn} onClick={() => removeEditExistingPhoto(i)}>✕</button>
+                            </div>
+                          ))}
+                          {editNewPhotos.map((p, i) => (
+                            <div key={`enew-${i}`} style={s.photoGridItem}>
+                              <img src={p.preview} style={s.photoGridImg} />
+                              <button style={s.photoRemoveBtn} onClick={() => removeEditNewPhoto(i)}>✕</button>
+                            </div>
+                          ))}
+                        </div>
                       )}
-                      <div>
-                        {item.names.map((n, i) => <div key={i} style={s.manageName}>{n}</div>)}
-                        <div style={s.manageRoom}>{locationLabel(item)}</div>
-                        {item.notes && <div style={s.manageNotes}>📝 {item.notes}</div>}
+                      <button style={{ ...s.photoBtn, marginBottom: 12 }} onClick={() => editPhotoRef.current.click()}>📷 Add Photo</button>
+                      <input ref={editPhotoRef} type="file" accept="image/*" capture="environment"
+                        style={{ display: "none" }} onChange={handleEditPhotoAdd} />
+
+                      <div style={s.editActions}>
+                        <button style={{ ...s.saveBtn, opacity: saving ? 0.6 : 1 }} onClick={saveEdit} disabled={saving}>
+                          {saving ? "Saving..." : "Save"}
+                        </button>
+                        <button style={s.cancelBtn} onClick={() => setEditingId(null)}>Cancel</button>
                       </div>
                     </div>
-                    <div style={s.manageActions}>
-                      <button style={s.editBtn} onClick={() => startEdit(item)}>Edit</button>
-                      <button style={s.deleteBtn} onClick={() => deleteItem(item.id)}>✕</button>
+                  ) : (
+                    <div style={s.manageRow}>
+                      <div style={{ flex: 1, minWidth: 0, display: "flex", gap: 10, alignItems: "center" }}>
+                        {photos.length > 0 && (
+                          <div style={s.thumbWrap} onClick={() => setLightbox({ photos, index: 0 })}>
+                            <img src={photos[0]} style={s.manageThumb} />
+                            {photos.length > 1 && <div style={s.thumbBadge}>+{photos.length - 1}</div>}
+                          </div>
+                        )}
+                        <div>
+                          {item.names.map((n, i) => <div key={i} style={s.manageName}>{n}</div>)}
+                          <div style={s.manageRoom}>{locationLabel(item)}</div>
+                          {item.notes && <div style={s.manageNotes}>📝 {item.notes}</div>}
+                        </div>
+                      </div>
+                      <div style={s.manageActions}>
+                        <button style={s.editBtn} onClick={() => startEdit(item)}>Edit</button>
+                        <button style={s.deleteBtn} onClick={() => deleteItem(item.id)}>✕</button>
+                      </div>
                     </div>
-                  </div>
-                )}
-              </div>
-            ))}
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
@@ -499,16 +673,28 @@ const s = {
   noMatch: { padding: "14px 16px", fontSize: 13, color: C.muted },
   noMatchLink: { color: C.blue, cursor: "pointer", textDecoration: "underline" },
   resultCard: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: "16px", display: "flex", flexDirection: "column", gap: 10 },
-  resultTop: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 },
-  resultNames: { fontSize: 14, color: C.text, lineHeight: 1.7, flex: 1 },
+  resultNames: { fontSize: 15, fontWeight: 700, color: C.text, lineHeight: 1.6 },
+  locationRow: { display: "flex", alignItems: "center", gap: 8 },
   roomBadge: { background: "#1a2332", border: `1px solid #2d4a6b`, color: C.blue, borderRadius: 6, padding: "6px 12px", fontSize: 13, fontWeight: 700, whiteSpace: "nowrap" },
   notesBox: { background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, padding: "10px 12px", display: "flex", gap: 8, alignItems: "flex-start" },
   notesIcon: { fontSize: 13, flexShrink: 0, marginTop: 1 },
   notesText: { fontSize: 13, color: C.muted, lineHeight: 1.5 },
-  resultPhoto: { width: "100%", borderRadius: 8, cursor: "zoom-in", objectFit: "cover", maxHeight: 220 },
-  lightboxOverlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.9)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center" },
-  lightboxImg: { maxWidth: "95vw", maxHeight: "90vh", borderRadius: 8, objectFit: "contain" },
-  lightboxClose: { position: "absolute", top: 20, right: 20, background: "transparent", border: "none", color: "#fff", fontSize: 24, cursor: "pointer" },
+  thumbStrip: { display: "flex", gap: 8 },
+  thumbWrap: { position: "relative", cursor: "pointer", flexShrink: 0 },
+  resultThumb: { width: 80, height: 80, borderRadius: 8, objectFit: "cover", display: "block" },
+  manageThumb: { width: 48, height: 48, borderRadius: 6, objectFit: "cover", display: "block" },
+  thumbBadge: { position: "absolute", bottom: 4, right: 4, background: "rgba(0,0,0,0.7)", color: "#fff", fontSize: 10, fontWeight: 700, borderRadius: 4, padding: "2px 5px" },
+  lightboxOverlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.92)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center" },
+  lightboxInner: { position: "relative", display: "flex", flexDirection: "column", alignItems: "center", gap: 16, maxWidth: "95vw" },
+  lightboxImg: { maxWidth: "95vw", maxHeight: "80vh", borderRadius: 8, objectFit: "contain" },
+  lightboxNav: { display: "flex", alignItems: "center", gap: 20 },
+  lightboxNavBtn: { background: "rgba(255,255,255,0.15)", border: "none", color: "#fff", fontSize: 28, borderRadius: 8, padding: "6px 16px", cursor: "pointer" },
+  lightboxCounter: { color: "#fff", fontSize: 13 },
+  lightboxClose: { position: "absolute", top: -40, right: 0, background: "transparent", border: "none", color: "#fff", fontSize: 24, cursor: "pointer" },
+  photoGrid: { display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 6 },
+  photoGridItem: { position: "relative" },
+  photoGridImg: { width: 72, height: 72, borderRadius: 8, objectFit: "cover", cursor: "zoom-in", display: "block" },
+  photoRemoveBtn: { position: "absolute", top: -6, right: -6, background: C.accent, border: "none", color: "#fff", borderRadius: "50%", width: 20, height: 20, fontSize: 10, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 },
   emptyState: { textAlign: "center", padding: "48px 20px", display: "flex", flexDirection: "column", alignItems: "center", gap: 10 },
   emptyIcon: { fontSize: 36 },
   emptyText: { color: C.muted, fontSize: 14 },
@@ -525,11 +711,9 @@ const s = {
   select: { background: C.bg, border: `1.5px solid ${C.border}`, borderRadius: 8, color: C.text, fontSize: 15, padding: "11px 13px", outline: "none", width: "100%", boxSizing: "border-box", appearance: "none", backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%238b949e' d='M6 8L1 3h10z'/%3E%3C/svg%3E")`, backgroundRepeat: "no-repeat", backgroundPosition: "right 13px center" },
   textarea: { background: C.bg, border: `1.5px solid ${C.border}`, borderRadius: 8, color: C.text, fontSize: 14, padding: "11px 13px", outline: "none", width: "100%", boxSizing: "border-box", resize: "vertical", fontFamily: "inherit", lineHeight: 1.5 },
   photoBtn: { background: "transparent", border: `1px dashed ${C.border}`, color: C.muted, borderRadius: 8, padding: "10px", cursor: "pointer", fontSize: 13, width: "100%", marginTop: 4 },
-  photoPreview: { width: "100%", borderRadius: 8, objectFit: "cover", maxHeight: 180, marginBottom: 6 },
   primaryBtn: { marginTop: 14, background: C.accent, border: "none", borderRadius: 8, color: "#fff", fontSize: 15, fontWeight: 600, padding: "13px", cursor: "pointer", width: "100%" },
   manageCard: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: "12px 14px" },
   manageRow: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 },
-  manageThumb: { width: 48, height: 48, borderRadius: 6, objectFit: "cover", flexShrink: 0, cursor: "zoom-in" },
   manageName: { fontSize: 14, fontWeight: 500, lineHeight: 1.6 },
   manageRoom: { fontSize: 12, color: C.blue, marginTop: 2 },
   manageNotes: { fontSize: 11, color: C.muted, marginTop: 3, lineHeight: 1.4 },
