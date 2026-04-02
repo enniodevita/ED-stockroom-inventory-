@@ -87,9 +87,9 @@ export default function App() {
   async function uploadPhoto(file, itemId) {
     const blob = await compressImage(file);
     const path = `${itemId}-${Date.now()}.jpg`;
-    const { error } = await supabase.storage.from("photos").upload(path, blob, { contentType: "image/jpeg", upsert: true });
+    const { error } = await supabase.storage.from("Photos").upload(path, blob, { contentType: "image/jpeg", upsert: true });
     if (error) return null;
-    const { data } = supabase.storage.from("photos").getPublicUrl(path);
+    const { data } = supabase.storage.from("Photos").getPublicUrl(path);
     return data.publicUrl;
   }
 
