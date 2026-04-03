@@ -8,8 +8,9 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON);
 const STOCKROOMS = [
   "Red Bin Room","Red Stockroom","Red Med Room",
   "Yellow Stockroom","Yellow Med Room","Yellow Hallway Pyxis",
-  "Ortho Stockroom","Green Stockroom","Green Med Room",
+  "Green/Ortho Stockroom","Green/Mobility Stockroom","Green Med Room",
   "Peds Stockroom","Peds Mini Stockroom","Peds Med Room",
+  "Cabinet between R44 and R43",
 ];
 const SPECIFICS = ["Front","Back","Left","Right","Pyxis"];
 
@@ -98,6 +99,10 @@ export default function App() {
   const [selectedGroup, setSelectedGroup] = useState(null);
   const [view, setView] = useState("search");
   const [manageQuery, setManageQuery] = useState("");
+  const [searchRoomFilter, setSearchRoomFilter] = useState([]);
+  const [manageRoomFilter, setManageRoomFilter] = useState([]);
+  const [showSearchFilter, setShowSearchFilter] = useState(false);
+  const [showManageFilter, setShowManageFilter] = useState(false);
   const [lightbox, setLightbox] = useState(null); // { photos, index }
 
   // Add form
@@ -163,7 +168,10 @@ export default function App() {
 
   // --- SEARCH ---
   const filtered = query.trim()
-    ? items.filter(i => i.names.some(n => n.toLowerCase().includes(query.toLowerCase())))
+    ? items.filter(i =>
+        i.names.some(n => n.toLowerCase().includes(query.toLowerCase())) &&
+        (searchRoomFilter.length === 0 || searchRoomFilter.includes(i.room))
+      )
     : [];
   const filteredGroups = groupItems(filtered);
 
@@ -369,6 +377,10 @@ export default function App() {
     showToast("Item removed"); fetchItems();
   }
 
+  function toggleRoomFilter(room, setter) {
+    setter(prev => prev.includes(room) ? prev.filter(r => r !== room) : [...prev, room]);
+  }
+
   const searchDropdownEntries = filteredGroups.map(group => {
     const matched = group.map(item => getMatchingName(item)).find(Boolean) || group[0].names[0];
     return { group, matched };
@@ -442,6 +454,29 @@ export default function App() {
               {showSuggestions && query.trim() && filtered.length === 0 && (
                 <div style={s.dropdown}>
                   <div style={s.noMatch}>No match — <span style={s.noMatchLink} onMouseDown={() => { setNewNames([query]); setView("add"); setShowSuggestions(false); }}>add "{query}"</span></div>
+                </div>
+              )}
+            </div>
+
+            {/* Room filter */}
+            <div>
+              <button style={s.filterToggle} onClick={() => setShowSearchFilter(f => !f)}>
+                🏷 Filter by room {searchRoomFilter.length > 0 ? `(${searchRoomFilter.length} selected)` : ""} {showSearchFilter ? "▲" : "▼"}
+              </button>
+              {showSearchFilter && (
+                <div style={s.filterPanel}>
+                  <div style={s.filterGrid}>
+                    {STOCKROOMS.map(r => (
+                      <label key={r} style={s.filterLabel}>
+                        <input type="checkbox" checked={searchRoomFilter.includes(r)}
+                          onChange={() => toggleRoomFilter(r, setSearchRoomFilter)} style={s.filterCheckbox} />
+                        {r}
+                      </label>
+                    ))}
+                  </div>
+                  {searchRoomFilter.length > 0 && (
+                    <button style={s.filterClear} onClick={() => setSearchRoomFilter([])}>Clear all</button>
+                  )}
                 </div>
               )}
             </div>
@@ -581,9 +616,11 @@ export default function App() {
         {/* MANAGE */}
         {view === "manage" && (() => {
           const allGroups = groupItems(items);
-          const visibleGroups = manageQuery.trim()
-            ? allGroups.filter(g => g[0].names.some(n => n.toLowerCase().includes(manageQuery.toLowerCase())))
-            : allGroups;
+          const visibleGroups = allGroups.filter(g => {
+            const nameMatch = !manageQuery.trim() || g[0].names.some(n => n.toLowerCase().includes(manageQuery.toLowerCase()));
+            const roomMatch = manageRoomFilter.length === 0 || g.some(item => manageRoomFilter.includes(item.room));
+            return nameMatch && roomMatch;
+          });
 
           return (
             <div style={s.section}>
@@ -593,6 +630,29 @@ export default function App() {
                 <input style={s.searchInput} placeholder="Filter items..."
                   value={manageQuery} onChange={e => setManageQuery(e.target.value)} autoComplete="off" />
                 {manageQuery && <button style={s.clearBtn} onClick={() => setManageQuery("")}>✕</button>}
+              </div>
+
+              {/* Room filter */}
+              <div>
+                <button style={s.filterToggle} onClick={() => setShowManageFilter(f => !f)}>
+                  🏷 Filter by room {manageRoomFilter.length > 0 ? `(${manageRoomFilter.length} selected)` : ""} {showManageFilter ? "▲" : "▼"}
+                </button>
+                {showManageFilter && (
+                  <div style={s.filterPanel}>
+                    <div style={s.filterGrid}>
+                      {STOCKROOMS.map(r => (
+                        <label key={r} style={s.filterLabel}>
+                          <input type="checkbox" checked={manageRoomFilter.includes(r)}
+                            onChange={() => toggleRoomFilter(r, setManageRoomFilter)} style={s.filterCheckbox} />
+                          {r}
+                        </label>
+                      ))}
+                    </div>
+                    {manageRoomFilter.length > 0 && (
+                      <button style={s.filterClear} onClick={() => setManageRoomFilter([])}>Clear all</button>
+                    )}
+                  </div>
+                )}
               </div>
 
               {loading && <div style={s.hint}>Loading...</div>}
@@ -845,6 +905,12 @@ const s = {
   locationTagRow: { display: "flex", flexWrap: "wrap", gap: 5, marginTop: 6 },
   locationTag: { background: "#1a2332", border: `1px solid #2d4a6b`, color: C.blue, borderRadius: 5, padding: "3px 8px", fontSize: 11, fontWeight: 600 },
   locationEditRow: { display: "flex", gap: 6, alignItems: "center", marginBottom: 6 },
+  filterToggle: { background: "transparent", border: `1px solid ${C.border}`, color: C.muted, borderRadius: 8, padding: "8px 12px", cursor: "pointer", fontSize: 12, width: "100%", textAlign: "left" },
+  filterPanel: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: "12px", marginTop: 6 },
+  filterGrid: { display: "flex", flexDirection: "column", gap: 8 },
+  filterLabel: { display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: C.text, cursor: "pointer" },
+  filterCheckbox: { width: 16, height: 16, accentColor: C.accent, cursor: "pointer" },
+  filterClear: { background: "transparent", border: "none", color: C.accent, fontSize: 12, cursor: "pointer", marginTop: 10, padding: 0 },
   manageActions: { display: "flex", gap: 6, flexShrink: 0 },
   editBtn: { background: "transparent", border: `1px solid ${C.border}`, color: C.muted, borderRadius: 6, padding: "5px 12px", cursor: "pointer", fontSize: 12 },
   deleteBtn: { background: "transparent", border: `1px solid #3d1a1a`, color: "#f85149", borderRadius: 6, padding: "5px 10px", cursor: "pointer", fontSize: 12 },
