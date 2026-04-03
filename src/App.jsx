@@ -165,7 +165,7 @@ export default function App() {
   const allGroups = groupItems(items);
   const visibleGroups = query.trim() || roomFilter.length > 0
     ? allGroups.filter(g => {
-        const nameMatch = !query.trim() || g[0].names.some(n => n.toLowerCase().includes(query.toLowerCase()));
+        const nameMatch = !query.trim() || g[0].names.some(n => n.toLowerCase().includes(query.trim().toLowerCase()));
         const roomMatch = roomFilter.length === 0 || g.some(item => roomFilter.includes(item.room));
         return nameMatch && roomMatch;
       })
@@ -407,7 +407,10 @@ export default function App() {
             {!query.trim() && roomFilter.length === 0 && (
               loading
                 ? <div style={s.hint}>Loading...</div>
-                : <div style={s.hint}>{items.length} item{items.length !== 1 ? "s" : ""} in inventory — start typing to search</div>
+                : <div style={s.hintRow}>
+                    <span style={s.hint}>{items.length} item{items.length !== 1 ? "s" : ""} in inventory — start typing to search</span>
+                    <button style={s.showAllBtn} onClick={() => setQuery(" ")}>Show all</button>
+                  </div>
             )}
 
             {(query.trim() || roomFilter.length > 0) && visibleGroups.length === 0 && (
@@ -717,6 +720,8 @@ const s = {
   filterCheckbox: { width: 16, height: 16, accentColor: C.accent, cursor: "pointer" },
   filterClear: { background: "transparent", border: "none", color: C.accent, fontSize: 12, cursor: "pointer", marginTop: 10, padding: 0 },
   hint: { textAlign: "center", color: C.muted, fontSize: 13, marginTop: 8 },
+  hintRow: { display: "flex", flexDirection: "column", alignItems: "center", gap: 8, marginTop: 8 },
+  showAllBtn: { background: "transparent", border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "7px 18px", cursor: "pointer", fontSize: 13 },
   emptyState: { textAlign: "center", padding: "40px 20px", display: "flex", flexDirection: "column", alignItems: "center", gap: 10 },
   emptyIcon: { fontSize: 36 },
   emptyText: { color: C.muted, fontSize: 14 },
