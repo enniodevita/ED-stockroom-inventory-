@@ -170,8 +170,19 @@ export default function App() {
         const nameMatch = !query.trim() || g[0].names.some(n => n.toLowerCase().includes(query.trim().toLowerCase()));
         const roomMatch = roomFilter.length === 0 || g.some(item => roomFilter.includes(item.room));
         return nameMatch && roomMatch;
-      })
+      }).sort((a, b) => a[0].names[0].localeCompare(b[0].names[0]))
     : [];
+
+  // For each group, which locations to show (filtered if room filter active)
+  function visibleLocations(group) {
+    if (roomFilter.length === 0) return group;
+    return group.filter(item => roomFilter.includes(item.room));
+  }
+
+  // Item count respects room filter
+  const inventoryCount = roomFilter.length > 0
+    ? allGroups.filter(g => g.some(item => roomFilter.includes(item.room))).length
+    : allGroups.length;
 
   function highlight(text, q) {
     if (!q) return text;
@@ -410,7 +421,7 @@ export default function App() {
               loading
                 ? <div style={s.hint}>Loading...</div>
                 : <div style={s.hintRow}>
-                    <span style={s.hint}>{items.length} item{items.length !== 1 ? "s" : ""} in inventory — start typing to search</span>
+                    <span style={s.hint}>{inventoryCount} item{inventoryCount !== 1 ? "s" : ""} in inventory{roomFilter.length > 0 ? " (filtered)" : ""} — start typing to search</span>
                     <button style={s.showAllBtn} onClick={() => setShowAll(true)}>Show all</button>
                   </div>
             )}
@@ -450,7 +461,7 @@ export default function App() {
                         <div key={i} style={i === 0 ? s.cardName : s.cardAlias}>{highlight(n, query)}</div>
                       ))}
                       <div style={s.locationTagRow}>
-                        {group.map(item => (
+                        {visibleLocations(group).map(item => (
                           <div key={item.id} style={s.locationTag}>{locationLabel(item)}</div>
                         ))}
                       </div>
