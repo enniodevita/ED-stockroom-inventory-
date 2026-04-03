@@ -92,6 +92,7 @@ export default function App() {
 
   // Search
   const [query, setQuery] = useState("");
+  const [showAll, setShowAll] = useState(false);
   const [roomFilter, setRoomFilter] = useState([]);
   const [showRoomFilter, setShowRoomFilter] = useState(false);
   const [detailGroup, setDetailGroup] = useState(null); // group being viewed/edited
@@ -163,7 +164,7 @@ export default function App() {
 
   // --- SEARCH RESULTS ---
   const allGroups = groupItems(items);
-  const visibleGroups = query.trim() || roomFilter.length > 0
+  const visibleGroups = query.trim() || roomFilter.length > 0 || showAll
     ? allGroups.filter(g => {
         const nameMatch = !query.trim() || g[0].names.some(n => n.toLowerCase().includes(query.trim().toLowerCase()));
         const roomMatch = roomFilter.length === 0 || g.some(item => roomFilter.includes(item.room));
@@ -377,9 +378,9 @@ export default function App() {
               <span style={s.searchIcon}>⌕</span>
               <input ref={searchRef} autoFocus style={s.searchInput}
                 placeholder="Type any name..." value={query}
-                onChange={e => { setQuery(e.target.value); setDetailGroup(null); }}
+                onChange={e => { setQuery(e.target.value); setDetailGroup(null); setShowAll(false); }}
                 autoComplete="off" />
-              {query && <button style={s.clearBtn} onClick={() => { setQuery(""); setDetailGroup(null); }}>✕</button>}
+              {(query || showAll) && <button style={s.clearBtn} onClick={() => { setQuery(""); setDetailGroup(null); setShowAll(false); }}>✕</button>}
             </div>
 
             {/* Room filter */}
@@ -404,12 +405,12 @@ export default function App() {
             </div>
 
             {/* Results */}
-            {!query.trim() && roomFilter.length === 0 && (
+            {!query.trim() && roomFilter.length === 0 && !showAll && (
               loading
                 ? <div style={s.hint}>Loading...</div>
                 : <div style={s.hintRow}>
                     <span style={s.hint}>{items.length} item{items.length !== 1 ? "s" : ""} in inventory — start typing to search</span>
-                    <button style={s.showAllBtn} onClick={() => setQuery(" ")}>Show all</button>
+                    <button style={s.showAllBtn} onClick={() => setShowAll(true)}>Show all</button>
                   </div>
             )}
 
