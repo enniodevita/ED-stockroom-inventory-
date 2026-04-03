@@ -54,7 +54,17 @@ function getPhotoUrls(item) {
   return [];
 }
 
-// Lightbox with prev/next toggling
+function groupPhotos(group) {
+  const seen = new Set();
+  const result = [];
+  for (const item of group) {
+    for (const url of getPhotoUrls(item)) {
+      if (!seen.has(url)) { seen.add(url); result.push(url); }
+    }
+  }
+  return result;
+}
+
 function Lightbox({ photos, startIndex, onClose }) {
   const [idx, setIdx] = useState(startIndex || 0);
   return (
@@ -74,63 +84,40 @@ function Lightbox({ photos, startIndex, onClose }) {
   );
 }
 
-// Thumbnail strip — shows first photo, click opens lightbox
-function PhotoStrip({ photos, onOpenLightbox }) {
-  if (!photos || photos.length === 0) return null;
-  return (
-    <div style={s.thumbStrip}>
-      {photos.map((url, i) => (
-        <div key={i} style={s.thumbWrap} onClick={() => onOpenLightbox(i)}>
-          <img src={url} style={s.thumb} />
-          {i === 0 && photos.length > 1 && (
-            <div style={s.thumbBadge}>+{photos.length - 1}</div>
-          )}
-        </div>
-      )).slice(0, 1)}
-    </div>
-  );
-}
-
 export default function App() {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [view, setView] = useState("search"); // search | add
+  const [lightbox, setLightbox] = useState(null);
+
+  // Search
   const [query, setQuery] = useState("");
-  const [showSuggestions, setShowSuggestions] = useState(false);
-  const [selectedGroup, setSelectedGroup] = useState(null);
-  const [view, setView] = useState("search");
-  const [manageQuery, setManageQuery] = useState("");
-  const [searchRoomFilter, setSearchRoomFilter] = useState([]);
-  const [manageRoomFilter, setManageRoomFilter] = useState([]);
-  const [showSearchFilter, setShowSearchFilter] = useState(false);
-  const [showManageFilter, setShowManageFilter] = useState(false);
-  const [lightbox, setLightbox] = useState(null); // { photos, index }
+  const [roomFilter, setRoomFilter] = useState([]);
+  const [showRoomFilter, setShowRoomFilter] = useState(false);
+  const [detailGroup, setDetailGroup] = useState(null); // group being viewed/edited
+  const [isEditing, setIsEditing] = useState(false);
 
   // Add form
   const [newNames, setNewNames] = useState([""]);
   const [newRoom, setNewRoom] = useState("");
   const [newSpecific, setNewSpecific] = useState("");
   const [newNotes, setNewNotes] = useState("");
-  const [newPhotos, setNewPhotos] = useState([]); // array of {file, preview}
+  const [newPhotos, setNewPhotos] = useState([]);
   const [sourcePhotoUrls, setSourcePhotoUrls] = useState([]);
   const [addSuggestions, setAddSuggestions] = useState([]);
   const [showAddSuggestions, setShowAddSuggestions] = useState(false);
 
-  const [editingId, setEditingId] = useState(null); // single item id for location edits
-  const [editingGroupKey, setEditingGroupKey] = useState(null); // group key for shared field edits
-  const [editingGroup, setEditingGroup] = useState([]); // current group being edited
-  const [newLocationRows, setNewLocationRows] = useState([]); // [{room, specific}]
+  // Edit form
   const [editNames, setEditNames] = useState([""]);
-  const [editRoom, setEditRoom] = useState("");
-  const [editSpecific, setEditSpecific] = useState("");
   const [editNotes, setEditNotes] = useState("");
-  const [editExistingPhotos, setEditExistingPhotos] = useState([]); // urls already saved
-  const [editNewPhotos, setEditNewPhotos] = useState([]); // new {file, preview}
+  const [editExistingPhotos, setEditExistingPhotos] = useState([]);
+  const [editNewPhotos, setEditNewPhotos] = useState([]);
+  const [newLocationRows, setNewLocationRows] = useState([]);
 
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState(null);
 
   const searchRef = useRef(null);
-  const searchWrapRef = useRef(null);
   const addSuggestWrapRef = useRef(null);
   const newPhotoRef = useRef(null);
   const editPhotoRef = useRef(null);
@@ -139,8 +126,8 @@ export default function App() {
 
   useEffect(() => {
     function handleClick(e) {
-      if (searchWrapRef.current && !searchWrapRef.current.contains(e.target)) setShowSuggestions(false);
-      if (addSuggestWrapRef.current && !addSuggestWrapRef.current.contains(e.target)) setShowAddSuggestions(false);
+      if (addSuggestWrapRef.current && !addSuggestWrapRef.current.contains(e.target))
+        setShowAddSuggestions(false);
     }
     document.addEventListener("mousedown", handleClick);
     return () => document.removeEventListener("mousedown", handleClick);
@@ -166,32 +153,23 @@ export default function App() {
     return supabase.storage.from("Photos").getPublicUrl(path).data.publicUrl;
   }
 
-  // --- SEARCH ---
-  const filtered = query.trim()
-    ? items.filter(i =>
-        i.names.some(n => n.toLowerCase().includes(query.toLowerCase())) &&
-        (searchRoomFilter.length === 0 || searchRoomFilter.includes(i.room))
-      )
+  function locationLabel(item) {
+    return item.room + (item.specific ? ` (${item.specific})` : "");
+  }
+
+  function toggleRoomFilter(room) {
+    setRoomFilter(prev => prev.includes(room) ? prev.filter(r => r !== room) : [...prev, room]);
+  }
+
+  // --- SEARCH RESULTS ---
+  const allGroups = groupItems(items);
+  const visibleGroups = query.trim() || roomFilter.length > 0
+    ? allGroups.filter(g => {
+        const nameMatch = !query.trim() || g[0].names.some(n => n.toLowerCase().includes(query.toLowerCase()));
+        const roomMatch = roomFilter.length === 0 || g.some(item => roomFilter.includes(item.room));
+        return nameMatch && roomMatch;
+      })
     : [];
-  const filteredGroups = groupItems(filtered);
-
-  function handleQueryChange(e) {
-    const val = e.target.value;
-    setQuery(val);
-    setSelectedGroup(null);
-    setShowSuggestions(val.trim().length > 0);
-  }
-
-  function selectSearchGroup(group) {
-    setSelectedGroup(group);
-    setQuery(group[0].names[0]);
-    setShowSuggestions(false);
-  }
-
-  function handleClear() {
-    setQuery(""); setSelectedGroup(null); setShowSuggestions(false);
-    searchRef.current?.focus();
-  }
 
   function highlight(text, q) {
     if (!q) return text;
@@ -200,13 +178,20 @@ export default function App() {
     return (<>{text.slice(0, idx)}<span style={s.highlight}>{text.slice(idx, idx + q.length)}</span>{text.slice(idx + q.length)}</>);
   }
 
-  function getMatchingName(item) {
-    const q = query.toLowerCase();
-    return item.names.find(n => n.toLowerCase().includes(q)) || item.names[0];
+  function openDetail(group) {
+    setDetailGroup(group);
+    setIsEditing(false);
   }
 
-  function locationLabel(item) {
-    return item.room + (item.specific ? ` (${item.specific})` : "");
+  function openEdit(group) {
+    const photos = groupPhotos(group);
+    setDetailGroup(group);
+    setIsEditing(true);
+    setEditNames([...group[0].names]);
+    setEditNotes(group[0].notes || "");
+    setEditExistingPhotos(photos);
+    setEditNewPhotos([]);
+    setNewLocationRows([]);
   }
 
   // --- ADD SUGGESTIONS ---
@@ -230,8 +215,7 @@ export default function App() {
   function selectAddSuggestion(item) {
     setNewNames([...item.names]);
     setNewNotes(item.notes || "");
-    const urls = getPhotoUrls(item);
-    setSourcePhotoUrls(urls);
+    setSourcePhotoUrls(getPhotoUrls(item));
     setNewPhotos([]);
     setShowAddSuggestions(false);
   }
@@ -246,7 +230,6 @@ export default function App() {
       names, room, specific: newSpecific || null, notes: newNotes.trim() || null, photo_url: null, photo_urls: []
     }]).select().single();
     if (error) { showToast("Failed to save", "error"); setSaving(false); return; }
-
     let allUrls = [...sourcePhotoUrls];
     for (let i = 0; i < newPhotos.length; i++) {
       const url = await uploadPhoto(newPhotos[i].file, data.id, i);
@@ -255,23 +238,17 @@ export default function App() {
     if (allUrls.length > 0) {
       await supabase.from("items").update({ photo_urls: allUrls, photo_url: allUrls[0] }).eq("id", data.id);
     }
-
-    // Propagate shared fields to sibling items (same name, different room)
-    const siblings = items.filter(i =>
-      i.names.some(n => names.map(x => x.toLowerCase()).includes(n.toLowerCase()))
-    );
+    const siblings = items.filter(i => i.names.some(n => names.map(x => x.toLowerCase()).includes(n.toLowerCase())));
     if (siblings.length > 0) {
-      const siblingIds = siblings.map(i => i.id);
       await supabase.from("items").update({
-        names, notes: newNotes.trim() || null,
-        photo_urls: allUrls, photo_url: allUrls[0] || null
-      }).in("id", siblingIds);
+        names, notes: newNotes.trim() || null, photo_urls: allUrls, photo_url: allUrls[0] || null
+      }).in("id", siblings.map(i => i.id));
     }
-
-    setNewNames([""]);setNewRoom("");setNewSpecific("");setNewNotes("");
-    setNewPhotos([]);setSourcePhotoUrls([]);
+    setNewNames([""]); setNewRoom(""); setNewSpecific(""); setNewNotes("");
+    setNewPhotos([]); setSourcePhotoUrls([]);
     showToast(`"${names[0]}" added`);
     setSaving(false);
+    setView("search");
     fetchItems();
   }
 
@@ -283,31 +260,62 @@ export default function App() {
     if (newNames.length === 1) return;
     setNewNames(newNames.filter((_, idx) => idx !== i));
   }
-
   function handleNewPhotoAdd(e) {
     const files = Array.from(e.target.files);
-    const newEntries = files.map(file => ({ file, preview: URL.createObjectURL(file) }));
-    setNewPhotos(prev => [...prev, ...newEntries]);
+    setNewPhotos(prev => [...prev, ...files.map(file => ({ file, preview: URL.createObjectURL(file) }))]);
     e.target.value = "";
   }
+  function removeNewPhoto(i) { setNewPhotos(prev => prev.filter((_, idx) => idx !== i)); }
+  function removeSourcePhoto(i) { setSourcePhotoUrls(prev => prev.filter((_, idx) => idx !== i)); }
 
-  function removeNewPhoto(i) {
-    setNewPhotos(prev => prev.filter((_, idx) => idx !== i));
+  // --- SAVE EDIT ---
+  async function saveEdit() {
+    const names = editNames.map(n => n.trim()).filter(Boolean);
+    if (names.length === 0) return;
+    setSaving(true);
+    let allUrls = [...editExistingPhotos];
+    for (let i = 0; i < editNewPhotos.length; i++) {
+      const url = await uploadPhoto(editNewPhotos[i].file, detailGroup[0].id, i + allUrls.length);
+      if (url) allUrls.push(url);
+    }
+    const groupIds = detailGroup.map(i => i.id);
+    await supabase.from("items").update({
+      names, notes: editNotes.trim() || null, photo_urls: allUrls, photo_url: allUrls[0] || null
+    }).in("id", groupIds);
+    const validNewLocations = newLocationRows.filter(r => r.room.trim());
+    if (validNewLocations.length > 0) {
+      await supabase.from("items").insert(validNewLocations.map(r => ({
+        names, room: r.room, specific: r.specific || null,
+        notes: editNotes.trim() || null, photo_urls: allUrls, photo_url: allUrls[0] || null
+      })));
+    }
+    showToast("Updated");
+    setSaving(false);
+    setIsEditing(false);
+    await fetchItems();
+    // Refresh detailGroup with updated data
+    const { data } = await supabase.from("items").select("*").in("id", groupIds);
+    if (data) setDetailGroup(data);
   }
 
-  function removeSourcePhoto(i) {
-    setSourcePhotoUrls(prev => prev.filter((_, idx) => idx !== i));
+  async function deleteItem(id) {
+    await supabase.from("items").delete().eq("id", id);
+    showToast("Item removed");
+    const remaining = detailGroup.filter(i => i.id !== id);
+    if (remaining.length === 0) { setDetailGroup(null); setIsEditing(false); }
+    else setDetailGroup(remaining);
+    fetchItems();
   }
 
-  // --- EDIT ---
-  function startEdit(item) {
-    setEditingId(item.id);
-    setEditNames([...item.names]);
-    setEditRoom(item.room);
-    setEditSpecific(item.specific || "");
-    setEditNotes(item.notes || "");
-    setEditExistingPhotos(getPhotoUrls(item));
-    setEditNewPhotos([]);
+  async function deleteGroup(group) {
+    if (group.length > 1) {
+      if (!window.confirm(`Delete all ${group.length} locations for "${group[0].names[0]}"?`)) return;
+    }
+    await Promise.all(group.map(i => supabase.from("items").delete().eq("id", i.id)));
+    showToast("Deleted");
+    setDetailGroup(null);
+    setIsEditing(false);
+    fetchItems();
   }
 
   function updateEditName(i, val) {
@@ -318,84 +326,21 @@ export default function App() {
     if (editNames.length === 1) return;
     setEditNames(editNames.filter((_, idx) => idx !== i));
   }
-
   function handleEditPhotoAdd(e) {
     const files = Array.from(e.target.files);
-    const newEntries = files.map(file => ({ file, preview: URL.createObjectURL(file) }));
-    setEditNewPhotos(prev => [...prev, ...newEntries]);
+    setEditNewPhotos(prev => [...prev, ...files.map(file => ({ file, preview: URL.createObjectURL(file) }))]);
     e.target.value = "";
   }
 
-  function removeEditExistingPhoto(i) {
-    setEditExistingPhotos(prev => prev.filter((_, idx) => idx !== i));
-  }
-
-  function removeEditNewPhoto(i) {
-    setEditNewPhotos(prev => prev.filter((_, idx) => idx !== i));
-  }
-
-  async function saveEdit() {
-    const names = editNames.map(n => n.trim()).filter(Boolean);
-    if (names.length === 0) return;
-    setSaving(true);
-
-    let allUrls = [...editExistingPhotos];
-    for (let i = 0; i < editNewPhotos.length; i++) {
-      const url = await uploadPhoto(editNewPhotos[i].file, editingId, i + allUrls.length);
-      if (url) allUrls.push(url);
-    }
-
-    // Update ALL items in the group with shared fields
-    const groupIds = editingGroup.map(i => i.id);
-    if (groupIds.length > 0) {
-      await supabase.from("items").update({
-        names, notes: editNotes.trim() || null,
-        photo_urls: allUrls, photo_url: allUrls[0] || null
-      }).in("id", groupIds);
-    }
-
-    // Insert any new location rows
-    const validNewLocations = newLocationRows.filter(r => r.room.trim());
-    if (validNewLocations.length > 0) {
-      await supabase.from("items").insert(
-        validNewLocations.map(r => ({
-          names, room: r.room, specific: r.specific || null,
-          notes: editNotes.trim() || null,
-          photo_urls: allUrls, photo_url: allUrls[0] || null
-        }))
-      );
-    }
-
-    setEditingId(null); setEditingGroupKey(null); setEditingGroup([]); setNewLocationRows([]);
-    setEditNewPhotos([]); setEditExistingPhotos([]);
-    showToast("Updated"); setSaving(false); fetchItems();
-  }
-
-  async function deleteItem(id) {
-    await supabase.from("items").delete().eq("id", id);
-    if (editingId === id) setEditingId(null);
-    showToast("Item removed"); fetchItems();
-  }
-
-  function toggleRoomFilter(room, setter) {
-    setter(prev => prev.includes(room) ? prev.filter(r => r !== room) : [...prev, room]);
-  }
-
-  const searchDropdownEntries = filteredGroups.map(group => {
-    const matched = group.map(item => getMatchingName(item)).find(Boolean) || group[0].names[0];
-    return { group, matched };
-  });
-
-  // All photos from a group combined (deduplicated)
-  function groupPhotos(group) {
-    const seen = new Set();
-    const result = [];
-    for (const item of group) {
-      for (const url of getPhotoUrls(item)) {
-        if (!seen.has(url)) { seen.add(url); result.push(url); }
-      }
-    }
-    return result;
+  // Sort names so matching one is first
+  function sortedNames(names) {
+    if (!query.trim()) return names;
+    const q = query.toLowerCase();
+    return [...names].sort((a, b) => {
+      const aM = a.toLowerCase().includes(q);
+      const bM = b.toLowerCase().includes(q);
+      return aM === bM ? 0 : aM ? -1 : 1;
+    });
   }
 
   return (
@@ -412,10 +357,10 @@ export default function App() {
             </div>
           </div>
           <div style={s.tabs}>
-            {["search","add","manage"].map(t => (
+            {["search","add"].map(t => (
               <button key={t} style={{ ...s.tab, ...(view === t ? s.tabActive : {}) }}
-                onClick={() => { setView(t); if (t === "search") setTimeout(() => searchRef.current?.focus(), 100); }}>
-                {t === "add" ? "+ Add" : t.charAt(0).toUpperCase() + t.slice(1)}
+                onClick={() => { setView(t); setDetailGroup(null); setIsEditing(false); if (t === "search") setTimeout(() => searchRef.current?.focus(), 100); }}>
+                {t === "add" ? "+ Add" : "Search"}
               </button>
             ))}
           </div>
@@ -424,106 +369,226 @@ export default function App() {
 
       <div style={s.body}>
 
-        {/* SEARCH */}
-        {view === "search" && (
+        {/* ── SEARCH ── */}
+        {view === "search" && !detailGroup && (
           <div style={s.section}>
-            <div style={s.searchOuter} ref={searchWrapRef}>
-              <div style={s.searchWrap}>
-                <span style={s.searchIcon}>⌕</span>
-                <input ref={searchRef} autoFocus style={s.searchInput}
-                  placeholder="Type any name..." value={query}
-                  onChange={handleQueryChange}
-                  onFocus={() => query.trim() && setShowSuggestions(true)}
-                  autoComplete="off" />
-                {query && <button style={s.clearBtn} onClick={handleClear}>✕</button>}
-              </div>
-
-              {showSuggestions && searchDropdownEntries.length > 0 && (
-                <div style={s.dropdown}>
-                  {searchDropdownEntries.map(({ group, matched }, idx) => (
-                    <button key={idx} style={s.suggestion} onMouseDown={() => selectSearchGroup(group)}>
-                      <div style={s.suggestionLeft}>
-                        <div style={s.suggestionName}>{highlight(matched, query)}</div>
-                        {group[0].names.length > 1 && <div style={s.suggestionSub}>{group[0].names.filter(n => n !== matched).join(" · ")}</div>}
-                      </div>
-                      <div style={s.suggestionRoom}>{group.length > 1 ? `${group.length} locations` : locationLabel(group[0])}</div>
-                    </button>
-                  ))}
-                </div>
-              )}
-              {showSuggestions && query.trim() && filtered.length === 0 && (
-                <div style={s.dropdown}>
-                  <div style={s.noMatch}>No match — <span style={s.noMatchLink} onMouseDown={() => { setNewNames([query]); setView("add"); setShowSuggestions(false); }}>add "{query}"</span></div>
-                </div>
-              )}
+            {/* Search input */}
+            <div style={s.searchWrap}>
+              <span style={s.searchIcon}>⌕</span>
+              <input ref={searchRef} autoFocus style={s.searchInput}
+                placeholder="Type any name..." value={query}
+                onChange={e => { setQuery(e.target.value); setDetailGroup(null); }}
+                autoComplete="off" />
+              {query && <button style={s.clearBtn} onClick={() => { setQuery(""); setDetailGroup(null); }}>✕</button>}
             </div>
 
             {/* Room filter */}
             <div>
-              <button style={s.filterToggle} onClick={() => setShowSearchFilter(f => !f)}>
-                🏷 Filter by room {searchRoomFilter.length > 0 ? `(${searchRoomFilter.length} selected)` : ""} {showSearchFilter ? "▲" : "▼"}
+              <button style={s.filterToggle} onClick={() => setShowRoomFilter(f => !f)}>
+                🏷 Filter by room{roomFilter.length > 0 ? ` (${roomFilter.length} selected)` : ""} {showRoomFilter ? "▲" : "▼"}
               </button>
-              {showSearchFilter && (
+              {showRoomFilter && (
                 <div style={s.filterPanel}>
                   <div style={s.filterGrid}>
                     {STOCKROOMS.map(r => (
                       <label key={r} style={s.filterLabel}>
-                        <input type="checkbox" checked={searchRoomFilter.includes(r)}
-                          onChange={() => toggleRoomFilter(r, setSearchRoomFilter)} style={s.filterCheckbox} />
+                        <input type="checkbox" checked={roomFilter.includes(r)}
+                          onChange={() => toggleRoomFilter(r)} style={s.filterCheckbox} />
                         {r}
                       </label>
                     ))}
                   </div>
-                  {searchRoomFilter.length > 0 && (
-                    <button style={s.filterClear} onClick={() => setSearchRoomFilter([])}>Clear all</button>
-                  )}
+                  {roomFilter.length > 0 && <button style={s.filterClear} onClick={() => setRoomFilter([])}>Clear all</button>}
                 </div>
               )}
             </div>
 
-            {selectedGroup && !showSuggestions && (() => {
-              const photos = groupPhotos(selectedGroup);
-              return (
-                <div style={s.resultCard}>
-                  <div style={s.resultNames}>{selectedGroup[0].names.join("  ·  ")}</div>
-                  {selectedGroup.map((item, idx) => (
-                    <div key={item.id} style={s.locationRow}>
-                      <div style={s.roomBadge}>{locationLabel(item)}</div>
-                    </div>
-                  ))}
-                  {selectedGroup[0].notes && (
-                    <div style={s.notesBox}>
-                      <span style={s.notesIcon}>📝</span>
-                      <span style={s.notesText}>{selectedGroup[0].notes}</span>
-                    </div>
-                  )}
-                  {photos.length > 0 && (
-                    <div style={s.thumbStrip}>
-                      <div style={s.thumbWrap} onClick={() => setLightbox({ photos, index: 0 })}>
-                        <img src={photos[0]} style={s.resultThumb} />
-                        {photos.length > 1 && <div style={s.thumbBadge}>+{photos.length - 1}</div>}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              );
-            })()}
+            {/* Results */}
+            {!query.trim() && roomFilter.length === 0 && (
+              loading
+                ? <div style={s.hint}>Loading...</div>
+                : <div style={s.hint}>{items.length} item{items.length !== 1 ? "s" : ""} in inventory — start typing to search</div>
+            )}
 
-            {!query && loading && <div style={s.hint}>Loading...</div>}
-            {!query && !loading && items.length === 0 && (
+            {(query.trim() || roomFilter.length > 0) && visibleGroups.length === 0 && (
               <div style={s.emptyState}>
-                <div style={s.emptyIcon}>📦</div>
-                <div style={s.emptyText}>No items yet.</div>
-                <button style={s.addHintBtn} onClick={() => setView("add")}>Add your first item →</button>
+                <div style={s.emptyIcon}>?</div>
+                <div style={s.emptyText}>No items found</div>
+                {query.trim() && (
+                  <button style={s.addHintBtn} onClick={() => { setNewNames([query]); setView("add"); }}>
+                    Add "{query}" →
+                  </button>
+                )}
               </div>
             )}
-            {!query && !loading && items.length > 0 && (
-              <div style={s.hint}>{items.length} item{items.length !== 1 ? "s" : ""} in inventory</div>
+
+            {visibleGroups.map((group, gi) => {
+              const photos = groupPhotos(group);
+              const names = sortedNames(group[0].names);
+              return (
+                <div key={gi} style={s.resultCard} onClick={() => openDetail(group)}>
+                  <div style={s.cardRow}>
+                    {photos.length > 0 && (
+                      <div style={s.thumbWrap} onClick={e => { e.stopPropagation(); setLightbox({ photos, index: 0 }); }}>
+                        <img src={photos[0]} style={s.manageThumb} />
+                        {photos.length > 1 && <div style={s.thumbBadge}>+{photos.length - 1}</div>}
+                      </div>
+                    )}
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      {names.map((n, i) => (
+                        <div key={i} style={i === 0 ? s.cardName : s.cardAlias}>{highlight(n, query)}</div>
+                      ))}
+                      <div style={s.locationTagRow}>
+                        {group.map(item => (
+                          <div key={item.id} style={s.locationTag}>{locationLabel(item)}</div>
+                        ))}
+                      </div>
+                    </div>
+                    <span style={s.chevron}>›</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* ── DETAIL / EDIT ── */}
+        {view === "search" && detailGroup && (
+          <div style={s.section}>
+            <button style={s.backBtn} onClick={() => { setDetailGroup(null); setIsEditing(false); }}>‹ Back</button>
+
+            {!isEditing ? (
+              /* Detail view */
+              <div style={s.detailCard}>
+                <div style={s.detailHeader}>
+                  <div style={{ flex: 1 }}>
+                    {detailGroup[0].names.map((n, i) => (
+                      <div key={i} style={i === 0 ? s.detailName : s.detailAlias}>{n}</div>
+                    ))}
+                  </div>
+                  <div style={s.detailActions}>
+                    <button style={s.editBtn} onClick={() => openEdit(detailGroup)}>Edit</button>
+                    <button style={s.deleteBtn} onClick={() => deleteGroup(detailGroup)}>✕</button>
+                  </div>
+                </div>
+
+                <div style={s.locationTagRow}>
+                  {detailGroup.map(item => (
+                    <div key={item.id} style={s.locationTag}>{locationLabel(item)}</div>
+                  ))}
+                </div>
+
+                {detailGroup[0].notes && (
+                  <div style={s.notesBox}>
+                    <span style={s.notesIcon}>📝</span>
+                    <span style={s.notesText}>{detailGroup[0].notes}</span>
+                  </div>
+                )}
+
+                {(() => {
+                  const photos = groupPhotos(detailGroup);
+                  return photos.length > 0 ? (
+                    <div style={s.photoGrid}>
+                      {photos.map((url, i) => (
+                        <div key={i} style={s.photoGridItem}>
+                          <img src={url} style={s.photoGridImg} onClick={() => setLightbox({ photos, index: i })} />
+                        </div>
+                      ))}
+                    </div>
+                  ) : null;
+                })()}
+              </div>
+            ) : (
+              /* Edit view */
+              <div style={s.formCard}>
+                <div style={s.formTitle}>Edit Item</div>
+
+                <label style={s.label}>Names</label>
+                {editNames.map((name, i) => (
+                  <div key={i} style={s.nameRow}>
+                    <input style={{ ...s.input, flex: 1, marginBottom: 6 }}
+                      value={name} onChange={e => updateEditName(i, e.target.value)} />
+                    {editNames.length > 1 && <button style={s.removeNameBtn} onClick={() => removeEditNameField(i)}>✕</button>}
+                  </div>
+                ))}
+                <button style={s.addNameBtn} onClick={addEditNameField}>+ Add another name</button>
+
+                <label style={s.label}>Notes <span style={s.optional}>(optional)</span></label>
+                <textarea style={{ ...s.textarea, marginBottom: 8 }} value={editNotes}
+                  onChange={e => setEditNotes(e.target.value)} rows={2}
+                  placeholder="e.g. Used to stop bleeding via compression" />
+
+                <label style={s.label}>Photos <span style={s.optional}>(optional)</span></label>
+                {(editExistingPhotos.length > 0 || editNewPhotos.length > 0) && (
+                  <div style={s.photoGrid}>
+                    {editExistingPhotos.map((url, i) => (
+                      <div key={`ex-${i}`} style={s.photoGridItem}>
+                        <img src={url} style={s.photoGridImg} onClick={() => setLightbox({ photos: editExistingPhotos, index: i })} />
+                        <button style={s.photoRemoveBtn} onClick={() => setEditExistingPhotos(prev => prev.filter((_, idx) => idx !== i))}>✕</button>
+                      </div>
+                    ))}
+                    {editNewPhotos.map((p, i) => (
+                      <div key={`enew-${i}`} style={s.photoGridItem}>
+                        <img src={p.preview} style={s.photoGridImg} />
+                        <button style={s.photoRemoveBtn} onClick={() => setEditNewPhotos(prev => prev.filter((_, idx) => idx !== i))}>✕</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <button style={{ ...s.photoBtn, marginBottom: 12 }} onClick={() => editPhotoRef.current.click()}>📷 Add Photo</button>
+                <input ref={editPhotoRef} type="file" accept="image/*" capture="environment"
+                  style={{ display: "none" }} onChange={handleEditPhotoAdd} />
+
+                <label style={s.label}>Locations</label>
+                {detailGroup.map(item => (
+                  <div key={item.id} style={s.locationEditRow}>
+                    <select style={{ ...s.select, flex: 1, fontSize: 13, padding: "8px 10px" }}
+                      value={item.room}
+                      onChange={async e => { await supabase.from("items").update({ room: e.target.value }).eq("id", item.id); fetchItems(); }}>
+                      {STOCKROOMS.map(r => <option key={r} value={r}>{r}</option>)}
+                    </select>
+                    <select style={{ ...s.select, width: 90, fontSize: 13, padding: "8px 8px" }}
+                      value={item.specific || ""}
+                      onChange={async e => { await supabase.from("items").update({ specific: e.target.value || null }).eq("id", item.id); fetchItems(); }}>
+                      <option value="">—</option>
+                      {SPECIFICS.map(o => <option key={o} value={o}>{o}</option>)}
+                    </select>
+                    <button style={s.deleteBtn} onClick={() => deleteItem(item.id)}>✕</button>
+                  </div>
+                ))}
+                {newLocationRows.map((row, i) => (
+                  <div key={`nlr-${i}`} style={s.locationEditRow}>
+                    <select style={{ ...s.select, flex: 1, fontSize: 13, padding: "8px 10px" }}
+                      value={row.room}
+                      onChange={e => { const u = [...newLocationRows]; u[i] = { ...u[i], room: e.target.value }; setNewLocationRows(u); }}>
+                      <option value="">Select location...</option>
+                      {STOCKROOMS.map(r => <option key={r} value={r}>{r}</option>)}
+                    </select>
+                    <select style={{ ...s.select, width: 90, fontSize: 13, padding: "8px 8px" }}
+                      value={row.specific}
+                      onChange={e => { const u = [...newLocationRows]; u[i] = { ...u[i], specific: e.target.value }; setNewLocationRows(u); }}>
+                      <option value="">—</option>
+                      {SPECIFICS.map(o => <option key={o} value={o}>{o}</option>)}
+                    </select>
+                    <button style={s.deleteBtn} onClick={() => setNewLocationRows(newLocationRows.filter((_, idx) => idx !== i))}>✕</button>
+                  </div>
+                ))}
+                <button style={s.addNameBtn} onClick={() => setNewLocationRows([...newLocationRows, { room: "", specific: "" }])}>
+                  + Add another location
+                </button>
+
+                <div style={s.editActions}>
+                  <button style={{ ...s.saveBtn, opacity: saving ? 0.6 : 1 }} onClick={saveEdit} disabled={saving}>
+                    {saving ? "Saving..." : "Save"}
+                  </button>
+                  <button style={s.cancelBtn} onClick={() => { setIsEditing(false); setNewLocationRows([]); }}>Cancel</button>
+                </div>
+              </div>
             )}
           </div>
         )}
 
-        {/* ADD */}
+        {/* ── ADD ── */}
         {view === "add" && (
           <div style={s.section}>
             <div style={s.formCard}>
@@ -539,24 +604,20 @@ export default function App() {
                 </div>
                 {showAddSuggestions && (
                   <div style={{ ...s.dropdown, position: "absolute", top: "calc(100% + 2px)", zIndex: 60 }}>
-                    {addSuggestions.map(item => (
-                      <button key={item.id} style={s.suggestion} onMouseDown={() => selectAddSuggestion(item)}>
-                        <div style={s.suggestionLeft}>
-                          {(() => {
-                            const q = newNames[0].toLowerCase();
-                            const matched = item.names.find(n => n.toLowerCase().includes(q)) || item.names[0];
-                            const others = item.names.filter(n => n !== matched);
-                            return (
-                              <>
-                                <div style={s.suggestionName}>{highlight(matched, newNames[0])}</div>
-                                {others.length > 0 && <div style={s.suggestionSub}>{others.join(" · ")}</div>}
-                              </>
-                            );
-                          })()}
-                        </div>
-                        <div style={s.suggestionRoom}>{item.room}</div>
-                      </button>
-                    ))}
+                    {addSuggestions.map(item => {
+                      const q = newNames[0].toLowerCase();
+                      const matched = item.names.find(n => n.toLowerCase().includes(q)) || item.names[0];
+                      const others = item.names.filter(n => n !== matched);
+                      return (
+                        <button key={item.id} style={s.suggestion} onMouseDown={() => selectAddSuggestion(item)}>
+                          <div style={s.suggestionLeft}>
+                            <div style={s.suggestionName}>{highlight(matched, newNames[0])}</div>
+                            {others.length > 0 && <div style={s.suggestionSub}>{others.join(" · ")}</div>}
+                          </div>
+                          <div style={s.suggestionRoom}>{item.room}</div>
+                        </button>
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -611,233 +672,14 @@ export default function App() {
                   {saving ? "Saving..." : "Add Item"}
                 </button>
                 <button style={{ ...s.cancelBtn, marginTop: 14 }} onClick={() => {
-                  setNewNames([""]);
-                  setNewRoom("");
-                  setNewSpecific("");
-                  setNewNotes("");
-                  setNewPhotos([]);
-                  setSourcePhotoUrls([]);
-                  setShowAddSuggestions(false);
+                  setNewNames([""]); setNewRoom(""); setNewSpecific(""); setNewNotes("");
+                  setNewPhotos([]); setSourcePhotoUrls([]); setShowAddSuggestions(false);
+                  setView("search");
                 }}>Cancel</button>
               </div>
             </div>
           </div>
         )}
-
-        {/* MANAGE */}
-        {view === "manage" && (() => {
-          const allGroups = groupItems(items);
-          const visibleGroups = allGroups.filter(g => {
-            const nameMatch = !manageQuery.trim() || g[0].names.some(n => n.toLowerCase().includes(manageQuery.toLowerCase()));
-            const roomMatch = manageRoomFilter.length === 0 || g.some(item => manageRoomFilter.includes(item.room));
-            return nameMatch && roomMatch;
-          });
-
-          return (
-            <div style={s.section}>
-              {/* Search bar */}
-              <div style={s.searchWrap}>
-                <span style={s.searchIcon}>⌕</span>
-                <input style={s.searchInput} placeholder="Filter items..."
-                  value={manageQuery} onChange={e => setManageQuery(e.target.value)} autoComplete="off" />
-                {manageQuery && <button style={s.clearBtn} onClick={() => setManageQuery("")}>✕</button>}
-              </div>
-
-              {/* Room filter */}
-              <div>
-                <button style={s.filterToggle} onClick={() => setShowManageFilter(f => !f)}>
-                  🏷 Filter by room {manageRoomFilter.length > 0 ? `(${manageRoomFilter.length} selected)` : ""} {showManageFilter ? "▲" : "▼"}
-                </button>
-                {showManageFilter && (
-                  <div style={s.filterPanel}>
-                    <div style={s.filterGrid}>
-                      {STOCKROOMS.map(r => (
-                        <label key={r} style={s.filterLabel}>
-                          <input type="checkbox" checked={manageRoomFilter.includes(r)}
-                            onChange={() => toggleRoomFilter(r, setManageRoomFilter)} style={s.filterCheckbox} />
-                          {r}
-                        </label>
-                      ))}
-                    </div>
-                    {manageRoomFilter.length > 0 && (
-                      <button style={s.filterClear} onClick={() => setManageRoomFilter([])}>Clear all</button>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              {loading && <div style={s.hint}>Loading...</div>}
-              {!loading && items.length === 0 && (
-                <div style={s.emptyState}>
-                  <div style={s.emptyIcon}>📦</div>
-                  <div style={s.emptyText}>No items to manage yet.</div>
-                </div>
-              )}
-
-              {visibleGroups.map((group, gi) => {
-                const photos = getPhotoUrls(group[0]);
-                const groupKey = group[0].names.slice().sort().join("|");
-                const isEditingGroup = editingGroupKey === groupKey;
-
-                return (
-                  <div key={groupKey} style={s.manageCard}>
-                    {isEditingGroup ? (
-                      <div style={s.editRow}>
-                        <label style={s.label}>Names</label>
-                        {editNames.map((name, i) => (
-                          <div key={i} style={s.nameRow}>
-                            <input style={{ ...s.input, flex: 1, marginBottom: 6 }}
-                              value={name} onChange={e => updateEditName(i, e.target.value)} />
-                            {editNames.length > 1 && <button style={s.removeNameBtn} onClick={() => removeEditNameField(i)}>✕</button>}
-                          </div>
-                        ))}
-                        <button style={s.addNameBtn} onClick={addEditNameField}>+ Add another name</button>
-
-                        <label style={s.label}>Notes <span style={s.optional}>(optional)</span></label>
-                        <textarea style={{ ...s.textarea, marginBottom: 8 }} value={editNotes}
-                          onChange={e => setEditNotes(e.target.value)} rows={2}
-                          placeholder="e.g. Used to stop bleeding via compression" />
-
-                        <label style={s.label}>Photos <span style={s.optional}>(optional)</span></label>
-                        {(editExistingPhotos.length > 0 || editNewPhotos.length > 0) && (
-                          <div style={s.photoGrid}>
-                            {editExistingPhotos.map((url, i) => (
-                              <div key={`ex-${i}`} style={s.photoGridItem}>
-                                <img src={url} style={s.photoGridImg} onClick={() => setLightbox({ photos: editExistingPhotos, index: i })} />
-                                <button style={s.photoRemoveBtn} onClick={() => removeEditExistingPhoto(i)}>✕</button>
-                              </div>
-                            ))}
-                            {editNewPhotos.map((p, i) => (
-                              <div key={`enew-${i}`} style={s.photoGridItem}>
-                                <img src={p.preview} style={s.photoGridImg} />
-                                <button style={s.photoRemoveBtn} onClick={() => removeEditNewPhoto(i)}>✕</button>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                        <button style={{ ...s.photoBtn, marginBottom: 12 }} onClick={() => editPhotoRef.current.click()}>📷 Add Photo</button>
-                        <input ref={editPhotoRef} type="file" accept="image/*" capture="environment"
-                          style={{ display: "none" }} onChange={handleEditPhotoAdd} />
-
-                        <label style={s.label}>Locations</label>
-                        {group.map(item => (
-                          <div key={item.id} style={s.locationEditRow}>
-                            <select style={{ ...s.select, flex: 1, fontSize: 13, padding: "8px 10px" }}
-                              value={item.room}
-                              onChange={async e => {
-                                await supabase.from("items").update({ room: e.target.value }).eq("id", item.id);
-                                fetchItems();
-                              }}>
-                              {STOCKROOMS.map(r => <option key={r} value={r}>{r}</option>)}
-                            </select>
-                            <select style={{ ...s.select, width: 90, fontSize: 13, padding: "8px 8px" }}
-                              value={item.specific || ""}
-                              onChange={async e => {
-                                await supabase.from("items").update({ specific: e.target.value || null }).eq("id", item.id);
-                                fetchItems();
-                              }}>
-                              <option value="">—</option>
-                              {SPECIFICS.map(o => <option key={o} value={o}>{o}</option>)}
-                            </select>
-                            <button style={s.deleteBtn} onClick={() => deleteItem(item.id)}>✕</button>
-                          </div>
-                        ))}
-                        {newLocationRows.map((row, i) => (
-                          <div key={`new-loc-${i}`} style={s.locationEditRow}>
-                            <select style={{ ...s.select, flex: 1, fontSize: 13, padding: "8px 10px" }}
-                              value={row.room}
-                              onChange={e => {
-                                const updated = [...newLocationRows];
-                                updated[i] = { ...updated[i], room: e.target.value };
-                                setNewLocationRows(updated);
-                              }}>
-                              <option value="">Select location...</option>
-                              {STOCKROOMS.map(r => <option key={r} value={r}>{r}</option>)}
-                            </select>
-                            <select style={{ ...s.select, width: 90, fontSize: 13, padding: "8px 8px" }}
-                              value={row.specific}
-                              onChange={e => {
-                                const updated = [...newLocationRows];
-                                updated[i] = { ...updated[i], specific: e.target.value };
-                                setNewLocationRows(updated);
-                              }}>
-                              <option value="">—</option>
-                              {SPECIFICS.map(o => <option key={o} value={o}>{o}</option>)}
-                            </select>
-                            <button style={s.deleteBtn} onClick={() => setNewLocationRows(newLocationRows.filter((_, idx) => idx !== i))}>✕</button>
-                          </div>
-                        ))}
-                        <button style={s.addNameBtn} onClick={() => setNewLocationRows([...newLocationRows, { room: "", specific: "" }])}>
-                          + Add another location
-                        </button>
-
-                        <div style={{ ...s.editActions, marginTop: 12 }}>
-                          <button style={{ ...s.saveBtn, opacity: saving ? 0.6 : 1 }} onClick={saveEdit} disabled={saving}>
-                            {saving ? "Saving..." : "Save"}
-                          </button>
-                          <button style={s.cancelBtn} onClick={() => { setEditingGroupKey(null); setEditingId(null); setEditingGroup([]); setNewLocationRows([]); }}>Cancel</button>
-                        </div>
-                      </div>
-                    ) : (
-                      <div>
-                        <div style={s.manageRow}>
-                          <div style={{ flex: 1, minWidth: 0, display: "flex", gap: 10, alignItems: "flex-start" }}>
-                            {photos.length > 0 && (
-                              <div style={s.thumbWrap} onClick={() => setLightbox({ photos, index: 0 })}>
-                                <img src={photos[0]} style={s.manageThumb} />
-                                {photos.length > 1 && <div style={s.thumbBadge}>+{photos.length - 1}</div>}
-                              </div>
-                            )}
-                            <div style={{ flex: 1 }}>
-                              {(() => {
-                                const q = manageQuery.toLowerCase();
-                                const sorted = q
-                                  ? [...group[0].names].sort((a, b) => {
-                                      const aMatch = a.toLowerCase().includes(q);
-                                      const bMatch = b.toLowerCase().includes(q);
-                                      return aMatch === bMatch ? 0 : aMatch ? -1 : 1;
-                                    })
-                                  : group[0].names;
-                                return sorted.map((n, i) => <div key={i} style={s.manageName}>{n}</div>);
-                              })()}
-                              {group[0].notes && <div style={s.manageNotes}>📝 {group[0].notes}</div>}
-                              <div style={s.locationTagRow}>
-                                {group.map(item => (
-                                  <div key={item.id} style={s.locationTag}>{locationLabel(item)}</div>
-                                ))}
-                              </div>
-                            </div>
-                          </div>
-                          <div style={s.manageActions}>
-                            <button style={s.editBtn} onClick={() => {
-                              setEditingGroupKey(groupKey);
-                              setEditingId(group[0].id);
-                              setEditingGroup(group);
-                              setEditNames([...group[0].names]);
-                              setEditNotes(group[0].notes || "");
-                              setEditExistingPhotos(photos);
-                              setEditNewPhotos([]);
-                              setNewLocationRows([]);
-                            }}>Edit</button>
-                            <button style={s.deleteBtn} onClick={() => {
-                              if (group.length === 1) {
-                                deleteItem(group[0].id);
-                              } else {
-                                if (window.confirm(`Delete all ${group.length} locations for "${group[0].names[0]}"?`)) {
-                                  Promise.all(group.map(i => supabase.from("items").delete().eq("id", i.id))).then(() => { showToast("All locations removed"); fetchItems(); });
-                                }
-                              }
-                            }}>✕</button>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          );
-        })()}
       </div>
 
       {toast && (
@@ -864,48 +706,45 @@ const s = {
   tabActive: { background: C.accent, color: "#fff" },
   body: { padding: "20px 16px" },
   section: { display: "flex", flexDirection: "column", gap: 10 },
-  searchOuter: { position: "relative" },
   searchWrap: { position: "relative", display: "flex", alignItems: "center" },
   searchIcon: { position: "absolute", left: 14, fontSize: 20, color: C.muted, pointerEvents: "none" },
   searchInput: { width: "100%", background: C.surface, border: `1.5px solid ${C.border}`, borderRadius: 10, color: C.text, fontSize: 16, padding: "13px 40px 13px 42px", outline: "none", boxSizing: "border-box" },
   clearBtn: { position: "absolute", right: 12, background: "transparent", border: "none", color: C.muted, fontSize: 14, cursor: "pointer", padding: 4 },
-  dropdown: { position: "absolute", top: "calc(100% + 6px)", left: 0, right: 0, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, zIndex: 50, overflow: "hidden", boxShadow: "0 8px 24px rgba(0,0,0,0.4)" },
-  suggestion: { display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", background: "transparent", border: "none", borderBottom: `1px solid ${C.border}`, color: C.text, padding: "12px 14px", cursor: "pointer", textAlign: "left", gap: 10 },
-  suggestionLeft: { flex: 1, minWidth: 0 },
-  suggestionName: { fontSize: 14, fontWeight: 500 },
-  suggestionSub: { fontSize: 11, color: C.muted, marginTop: 2 },
-  suggestionRoom: { fontSize: 12, color: C.blue, fontWeight: 600, whiteSpace: "nowrap", flexShrink: 0 },
-  highlight: { color: C.accent, fontWeight: 700 },
-  noMatch: { padding: "14px 16px", fontSize: 13, color: C.muted },
-  noMatchLink: { color: C.blue, cursor: "pointer", textDecoration: "underline" },
-  resultCard: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: "16px", display: "flex", flexDirection: "column", gap: 10 },
-  resultNames: { fontSize: 15, fontWeight: 700, color: C.text, lineHeight: 1.6 },
-  locationRow: { display: "flex", alignItems: "center", gap: 8 },
-  roomBadge: { background: "#1a2332", border: `1px solid #2d4a6b`, color: C.blue, borderRadius: 6, padding: "6px 12px", fontSize: 13, fontWeight: 700, whiteSpace: "nowrap" },
-  notesBox: { background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, padding: "10px 12px", display: "flex", gap: 8, alignItems: "flex-start" },
-  notesIcon: { fontSize: 13, flexShrink: 0, marginTop: 1 },
-  notesText: { fontSize: 13, color: C.muted, lineHeight: 1.5 },
-  thumbStrip: { display: "flex", gap: 8 },
-  thumbWrap: { position: "relative", cursor: "pointer", flexShrink: 0 },
-  resultThumb: { width: 80, height: 80, borderRadius: 8, objectFit: "cover", display: "block" },
-  manageThumb: { width: 48, height: 48, borderRadius: 6, objectFit: "cover", display: "block" },
-  thumbBadge: { position: "absolute", bottom: 4, right: 4, background: "rgba(0,0,0,0.7)", color: "#fff", fontSize: 10, fontWeight: 700, borderRadius: 4, padding: "2px 5px" },
-  lightboxOverlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.92)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center" },
-  lightboxInner: { position: "relative", display: "flex", flexDirection: "column", alignItems: "center", gap: 16, maxWidth: "95vw" },
-  lightboxImg: { maxWidth: "95vw", maxHeight: "80vh", borderRadius: 8, objectFit: "contain" },
-  lightboxNav: { display: "flex", alignItems: "center", gap: 20 },
-  lightboxNavBtn: { background: "rgba(255,255,255,0.15)", border: "none", color: "#fff", fontSize: 28, borderRadius: 8, padding: "6px 16px", cursor: "pointer" },
-  lightboxCounter: { color: "#fff", fontSize: 13 },
-  lightboxClose: { position: "absolute", top: -40, right: 0, background: "transparent", border: "none", color: "#fff", fontSize: 24, cursor: "pointer" },
-  photoGrid: { display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 6 },
-  photoGridItem: { position: "relative" },
-  photoGridImg: { width: 72, height: 72, borderRadius: 8, objectFit: "cover", cursor: "zoom-in", display: "block" },
-  photoRemoveBtn: { position: "absolute", top: -6, right: -6, background: C.accent, border: "none", color: "#fff", borderRadius: "50%", width: 20, height: 20, fontSize: 10, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 },
-  emptyState: { textAlign: "center", padding: "48px 20px", display: "flex", flexDirection: "column", alignItems: "center", gap: 10 },
+  filterToggle: { background: "transparent", border: `1px solid ${C.border}`, color: C.muted, borderRadius: 8, padding: "8px 12px", cursor: "pointer", fontSize: 12, width: "100%", textAlign: "left" },
+  filterPanel: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: "12px", marginTop: 6 },
+  filterGrid: { display: "flex", flexDirection: "column", gap: 8 },
+  filterLabel: { display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: C.text, cursor: "pointer" },
+  filterCheckbox: { width: 16, height: 16, accentColor: C.accent, cursor: "pointer" },
+  filterClear: { background: "transparent", border: "none", color: C.accent, fontSize: 12, cursor: "pointer", marginTop: 10, padding: 0 },
+  hint: { textAlign: "center", color: C.muted, fontSize: 13, marginTop: 8 },
+  emptyState: { textAlign: "center", padding: "40px 20px", display: "flex", flexDirection: "column", alignItems: "center", gap: 10 },
   emptyIcon: { fontSize: 36 },
   emptyText: { color: C.muted, fontSize: 14 },
   addHintBtn: { background: "transparent", border: `1px solid ${C.border}`, color: C.text, borderRadius: 8, padding: "8px 16px", cursor: "pointer", fontSize: 13, marginTop: 6 },
-  hint: { textAlign: "center", color: C.muted, fontSize: 13, marginTop: 8 },
+  // Result cards
+  resultCard: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: "12px 14px", cursor: "pointer" },
+  cardRow: { display: "flex", alignItems: "center", gap: 10 },
+  cardName: { fontSize: 14, fontWeight: 600, lineHeight: 1.4 },
+  cardAlias: { fontSize: 12, color: C.muted, lineHeight: 1.4 },
+  chevron: { color: C.muted, fontSize: 20, flexShrink: 0 },
+  // Detail
+  backBtn: { background: "transparent", border: "none", color: C.blue, fontSize: 14, cursor: "pointer", padding: "0 0 4px 0", textAlign: "left" },
+  detailCard: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: "16px", display: "flex", flexDirection: "column", gap: 12 },
+  detailHeader: { display: "flex", alignItems: "flex-start", gap: 10 },
+  detailName: { fontSize: 17, fontWeight: 700, lineHeight: 1.4 },
+  detailAlias: { fontSize: 13, color: C.muted, lineHeight: 1.5 },
+  detailActions: { display: "flex", gap: 6, flexShrink: 0 },
+  // Shared
+  locationTagRow: { display: "flex", flexWrap: "wrap", gap: 5 },
+  locationTag: { background: "#1a2332", border: `1px solid #2d4a6b`, color: C.blue, borderRadius: 5, padding: "3px 8px", fontSize: 11, fontWeight: 600 },
+  notesBox: { background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, padding: "10px 12px", display: "flex", gap: 8, alignItems: "flex-start" },
+  notesIcon: { fontSize: 13, flexShrink: 0, marginTop: 1 },
+  notesText: { fontSize: 13, color: C.muted, lineHeight: 1.5 },
+  thumbWrap: { position: "relative", cursor: "pointer", flexShrink: 0 },
+  manageThumb: { width: 52, height: 52, borderRadius: 6, objectFit: "cover", display: "block" },
+  thumbBadge: { position: "absolute", bottom: 3, right: 3, background: "rgba(0,0,0,0.7)", color: "#fff", fontSize: 10, fontWeight: 700, borderRadius: 4, padding: "2px 4px" },
+  highlight: { color: C.accent, fontWeight: 700 },
+  // Form
   formCard: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: "20px 18px", display: "flex", flexDirection: "column", gap: 4 },
   formTitle: { fontSize: 15, fontWeight: 700, marginBottom: 10 },
   label: { fontSize: 12, color: C.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6, marginTop: 8 },
@@ -917,28 +756,30 @@ const s = {
   select: { background: C.bg, border: `1.5px solid ${C.border}`, borderRadius: 8, color: C.text, fontSize: 15, padding: "11px 13px", outline: "none", width: "100%", boxSizing: "border-box", appearance: "none", backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%238b949e' d='M6 8L1 3h10z'/%3E%3C/svg%3E")`, backgroundRepeat: "no-repeat", backgroundPosition: "right 13px center" },
   textarea: { background: C.bg, border: `1.5px solid ${C.border}`, borderRadius: 8, color: C.text, fontSize: 14, padding: "11px 13px", outline: "none", width: "100%", boxSizing: "border-box", resize: "vertical", fontFamily: "inherit", lineHeight: 1.5 },
   photoBtn: { background: "transparent", border: `1px dashed ${C.border}`, color: C.muted, borderRadius: 8, padding: "10px", cursor: "pointer", fontSize: 13, width: "100%", marginTop: 4 },
-  primaryBtn: { marginTop: 14, background: C.accent, border: "none", borderRadius: 8, color: "#fff", fontSize: 15, fontWeight: 600, padding: "13px", cursor: "pointer", width: "100%" },
-  manageCard: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: "12px 14px" },
-  manageRow: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 },
-  manageName: { fontSize: 14, fontWeight: 500, lineHeight: 1.6 },
-  manageRoom: { fontSize: 12, color: C.blue, marginTop: 2 },
-  manageNotes: { fontSize: 11, color: C.muted, marginTop: 3, lineHeight: 1.4 },
-  locationTagRow: { display: "flex", flexWrap: "wrap", gap: 5, marginTop: 6 },
-  locationTag: { background: "#1a2332", border: `1px solid #2d4a6b`, color: C.blue, borderRadius: 5, padding: "3px 8px", fontSize: 11, fontWeight: 600 },
-  locationEditRow: { display: "flex", gap: 6, alignItems: "center", marginBottom: 6 },
-  filterToggle: { background: "transparent", border: `1px solid ${C.border}`, color: C.muted, borderRadius: 8, padding: "8px 12px", cursor: "pointer", fontSize: 12, width: "100%", textAlign: "left" },
-  filterPanel: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: "12px", marginTop: 6 },
-  filterGrid: { display: "flex", flexDirection: "column", gap: 8 },
-  filterLabel: { display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: C.text, cursor: "pointer" },
-  filterCheckbox: { width: 16, height: 16, accentColor: C.accent, cursor: "pointer" },
-  filterClear: { background: "transparent", border: "none", color: C.accent, fontSize: 12, cursor: "pointer", marginTop: 10, padding: 0 },
-  manageActions: { display: "flex", gap: 6, flexShrink: 0 },
+  photoGrid: { display: "flex", flexWrap: "wrap", gap: 8 },
+  photoGridItem: { position: "relative" },
+  photoGridImg: { width: 72, height: 72, borderRadius: 8, objectFit: "cover", cursor: "zoom-in", display: "block" },
+  photoRemoveBtn: { position: "absolute", top: -6, right: -6, background: C.accent, border: "none", color: "#fff", borderRadius: "50%", width: 20, height: 20, fontSize: 10, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 },
+  primaryBtn: { background: C.accent, border: "none", borderRadius: 8, color: "#fff", fontSize: 15, fontWeight: 600, padding: "13px", cursor: "pointer", width: "100%" },
   editBtn: { background: "transparent", border: `1px solid ${C.border}`, color: C.muted, borderRadius: 6, padding: "5px 12px", cursor: "pointer", fontSize: 12 },
   deleteBtn: { background: "transparent", border: `1px solid #3d1a1a`, color: "#f85149", borderRadius: 6, padding: "5px 10px", cursor: "pointer", fontSize: 12 },
-  editRow: { display: "flex", flexDirection: "column" },
+  locationEditRow: { display: "flex", gap: 6, alignItems: "center", marginBottom: 6 },
   editActions: { display: "flex", gap: 8 },
   saveBtn: { background: C.green, border: "none", borderRadius: 6, color: "#fff", padding: "7px 18px", cursor: "pointer", fontSize: 13, fontWeight: 600, flex: 1 },
-  cancelBtn: { background: "transparent", border: `1px solid ${C.border}`, borderRadius: 6, color: C.muted, padding: "7px 18px", cursor: "pointer", fontSize: 13, flex: 1 },
+  cancelBtn: { background: "transparent", border: `1px solid ${C.border}`, borderRadius: 6, color: C.muted, padding: "7px 18px", cursor: "pointer", fontSize: 13 },
+  dropdown: { position: "absolute", top: "calc(100% + 6px)", left: 0, right: 0, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, zIndex: 50, overflow: "hidden", boxShadow: "0 8px 24px rgba(0,0,0,0.4)" },
+  suggestion: { display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", background: "transparent", border: "none", borderBottom: `1px solid ${C.border}`, color: C.text, padding: "12px 14px", cursor: "pointer", textAlign: "left", gap: 10 },
+  suggestionLeft: { flex: 1, minWidth: 0 },
+  suggestionName: { fontSize: 14, fontWeight: 500 },
+  suggestionSub: { fontSize: 11, color: C.muted, marginTop: 2 },
+  suggestionRoom: { fontSize: 12, color: C.blue, fontWeight: 600, whiteSpace: "nowrap", flexShrink: 0 },
+  lightboxOverlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.92)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center" },
+  lightboxInner: { position: "relative", display: "flex", flexDirection: "column", alignItems: "center", gap: 16, maxWidth: "95vw" },
+  lightboxImg: { maxWidth: "95vw", maxHeight: "80vh", borderRadius: 8, objectFit: "contain" },
+  lightboxNav: { display: "flex", alignItems: "center", gap: 20 },
+  lightboxNavBtn: { background: "rgba(255,255,255,0.15)", border: "none", color: "#fff", fontSize: 28, borderRadius: 8, padding: "6px 16px", cursor: "pointer" },
+  lightboxCounter: { color: "#fff", fontSize: 13 },
+  lightboxClose: { position: "absolute", top: -40, right: 0, background: "transparent", border: "none", color: "#fff", fontSize: 24, cursor: "pointer" },
   toast: { position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", background: C.green, color: "#fff", borderRadius: 8, padding: "10px 22px", fontSize: 14, fontWeight: 600, zIndex: 100, boxShadow: "0 4px 20px rgba(0,0,0,0.4)" },
   toastError: { background: C.accent },
 };
