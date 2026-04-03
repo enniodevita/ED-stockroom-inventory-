@@ -170,7 +170,27 @@ export default function App() {
         const nameMatch = !query.trim() || g[0].names.some(n => n.toLowerCase().includes(query.trim().toLowerCase()));
         const roomMatch = roomFilter.length === 0 || g.some(item => roomFilter.includes(item.room));
         return nameMatch && roomMatch;
-      }).sort((a, b) => a[0].names[0].localeCompare(b[0].names[0]))
+      }).sort((a, b) => {
+        if (!query.trim()) {
+          // Show all: alphabetical
+          return a[0].names[0].localeCompare(b[0].names[0]);
+        }
+        // Typing: sort by closeness to query
+        const q = query.trim().toLowerCase();
+        function score(group) {
+          let best = 3;
+          for (const name of group[0].names) {
+            const n = name.toLowerCase();
+            if (n === q) best = Math.min(best, 0);
+            else if (n.startsWith(q)) best = Math.min(best, 1);
+            else if (n.includes(q)) best = Math.min(best, 2);
+          }
+          return best;
+        }
+        const diff = score(a) - score(b);
+        if (diff !== 0) return diff;
+        return a[0].names[0].localeCompare(b[0].names[0]);
+      })
     : [];
 
   // For each group, which locations to show (filtered if room filter active)
