@@ -164,7 +164,8 @@ export default function App() {
 
   // --- SEARCH RESULTS ---
   const allGroups = groupItems(items);
-  const visibleGroups = query.trim() || roomFilter.length > 0 || showAll
+  const isShowingResults = query.trim() || showAll;
+  const visibleGroups = isShowingResults
     ? allGroups.filter(g => {
         const nameMatch = !query.trim() || g[0].names.some(n => n.toLowerCase().includes(query.trim().toLowerCase()));
         const roomMatch = roomFilter.length === 0 || g.some(item => roomFilter.includes(item.room));
@@ -405,13 +406,19 @@ export default function App() {
             </div>
 
             {/* Results */}
-            {!query.trim() && roomFilter.length === 0 && !showAll && (
+            {!query.trim() && !showAll && (
               loading
                 ? <div style={s.hint}>Loading...</div>
                 : <div style={s.hintRow}>
                     <span style={s.hint}>{items.length} item{items.length !== 1 ? "s" : ""} in inventory — start typing to search</span>
                     <button style={s.showAllBtn} onClick={() => setShowAll(true)}>Show all</button>
                   </div>
+            )}
+            {showAll && !query.trim() && (
+              <div style={s.hintRow}>
+                <span style={s.hint}>Showing all {visibleGroups.length} item{visibleGroups.length !== 1 ? "s" : ""}{roomFilter.length > 0 ? " (filtered)" : ""}</span>
+                <button style={s.showAllBtn} onClick={() => setShowAll(false)}>Hide all</button>
+              </div>
             )}
 
             {(query.trim() || roomFilter.length > 0) && visibleGroups.length === 0 && (
