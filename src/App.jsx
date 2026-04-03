@@ -606,9 +606,20 @@ export default function App() {
               <input ref={newPhotoRef} type="file" accept="image/*" capture="environment"
                 style={{ display: "none" }} onChange={handleNewPhotoAdd} />
 
-              <button style={{ ...s.primaryBtn, opacity: saving ? 0.6 : 1 }} onClick={addItem} disabled={saving}>
-                {saving ? "Saving..." : "Add Item"}
-              </button>
+              <div style={s.editActions}>
+                <button style={{ ...s.primaryBtn, marginTop: 14, flex: 1, opacity: saving ? 0.6 : 1 }} onClick={addItem} disabled={saving}>
+                  {saving ? "Saving..." : "Add Item"}
+                </button>
+                <button style={{ ...s.cancelBtn, marginTop: 14 }} onClick={() => {
+                  setNewNames([""]);
+                  setNewRoom("");
+                  setNewSpecific("");
+                  setNewNotes("");
+                  setNewPhotos([]);
+                  setSourcePhotoUrls([]);
+                  setShowAddSuggestions(false);
+                }}>Cancel</button>
+              </div>
             </div>
           </div>
         )}
@@ -778,7 +789,17 @@ export default function App() {
                               </div>
                             )}
                             <div style={{ flex: 1 }}>
-                              {group[0].names.map((n, i) => <div key={i} style={s.manageName}>{n}</div>)}
+                              {(() => {
+                                const q = manageQuery.toLowerCase();
+                                const sorted = q
+                                  ? [...group[0].names].sort((a, b) => {
+                                      const aMatch = a.toLowerCase().includes(q);
+                                      const bMatch = b.toLowerCase().includes(q);
+                                      return aMatch === bMatch ? 0 : aMatch ? -1 : 1;
+                                    })
+                                  : group[0].names;
+                                return sorted.map((n, i) => <div key={i} style={s.manageName}>{n}</div>);
+                              })()}
                               {group[0].notes && <div style={s.manageNotes}>📝 {group[0].notes}</div>}
                               <div style={s.locationTagRow}>
                                 {group.map(item => (
