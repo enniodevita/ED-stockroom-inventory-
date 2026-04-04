@@ -189,11 +189,12 @@ export default function App() {
       // Show all: alphabetical
       return groups.sort((a, b) => a[0].names[0].localeCompare(b[0].names[0]));
     }
-    // Typing: only show the best-scoring tier
-    const bestScore = Math.min(...groups.map(scoreGroup));
-    return groups
-      .filter(g => scoreGroup(g) === bestScore)
-      .sort((a, b) => a[0].names[0].localeCompare(b[0].names[0]));
+    // Typing: show all matches, sorted by tier then alphabetical
+    return groups.sort((a, b) => {
+      const diff = scoreGroup(a) - scoreGroup(b);
+      if (diff !== 0) return diff;
+      return a[0].names[0].localeCompare(b[0].names[0]);
+    });
   })();
 
   // For each group, which locations to show (filtered if room filter active)
