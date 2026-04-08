@@ -11,6 +11,8 @@ const STOCKROOMS = [
   "Green/Ortho Stockroom","Green/Mobility Stockroom","Green Med Room",
   "Peds Stockroom","Peds Mini Stockroom","Peds Med Room",
   "Cabinet between R44 and R43",
+  "Cabinet between R43 and R42",
+  "Cabinet near R45",
 ];
 const SPECIFICS = ["Front","Back","Left","Right","Pyxis"];
 
