@@ -103,7 +103,9 @@ export default function App() {
   // Add form
   const [newNames, setNewNames] = useState([""]);
   const [newRoom, setNewRoom] = useState("");
+  const [newCustomRoom, setNewCustomRoom] = useState("");
   const [newSpecific, setNewSpecific] = useState("");
+  const [newPyxisDoor, setNewPyxisDoor] = useState("");
   const [newNotes, setNewNotes] = useState("");
   const [newPhotos, setNewPhotos] = useState([]);
   const [sourcePhotoUrls, setSourcePhotoUrls] = useState([]);
@@ -262,11 +264,12 @@ export default function App() {
   // --- ADD ITEM ---
   async function addItem() {
     const names = newNames.map(n => n.trim()).filter(Boolean);
-    const room = newRoom.trim();
+    const room = (newRoom === "Other" ? newCustomRoom : newRoom).trim();
+    const specific = newSpecific === "Pyxis" && newPyxisDoor ? `Pyxis Door ${newPyxisDoor}` : (newSpecific || null);
     if (names.length === 0 || !room) return showToast("Add at least one name and a location", "error");
     setSaving(true);
     const { data, error } = await supabase.from("items").insert([{
-      names, room, specific: newSpecific || null, notes: newNotes.trim() || null, photo_url: null, photo_urls: []
+      names, room, specific, notes: newNotes.trim() || null, photo_url: null, photo_urls: []
     }]).select().single();
     if (error) { showToast("Failed to save", "error"); setSaving(false); return; }
     let allUrls = [...sourcePhotoUrls];
@@ -283,7 +286,7 @@ export default function App() {
         names, notes: newNotes.trim() || null, photo_urls: allUrls, photo_url: allUrls[0] || null
       }).in("id", siblings.map(i => i.id));
     }
-    setNewNames([""]); setNewRoom(""); setNewSpecific(""); setNewNotes("");
+    setNewNames([""]); setNewRoom(""); setNewCustomRoom(""); setNewSpecific(""); setNewPyxisDoor(""); setNewNotes("");
     setNewPhotos([]); setSourcePhotoUrls([]);
     showToast(`"${names[0]}" added`);
     setSaving(false);
@@ -321,12 +324,13 @@ export default function App() {
     await supabase.from("items").update({
       names, notes: editNotes.trim() || null, photo_urls: allUrls, photo_url: allUrls[0] || null
     }).in("id", groupIds);
-    const validNewLocations = newLocationRows.filter(r => r.room.trim());
+    const validNewLocations = newLocationRows.filter(r => (r.room === "Other" ? r.customRoom : r.room)?.trim());
     if (validNewLocations.length > 0) {
-      await supabase.from("items").insert(validNewLocations.map(r => ({
-        names, room: r.room, specific: r.specific || null,
-        notes: editNotes.trim() || null, photo_urls: allUrls, photo_url: allUrls[0] || null
-      })));
+      await supabase.from("items").insert(validNewLocations.map(r => {
+        const room = r.room === "Other" ? r.customRoom.trim() : r.room;
+        const specific = r.specific === "Pyxis" && r.pyxisDoor ? `Pyxis Door ${r.pyxisDoor}` : (r.specific || null);
+        return { names, room, specific, notes: editNotes.trim() || null, photo_urls: allUrls, photo_url: allUrls[0] || null };
+      }));
     }
     showToast("Updated");
     setSaving(false);
@@ -338,6 +342,9 @@ export default function App() {
   }
 
   async function deleteItem(id) {
+    const item = detailGroup.find(i => i.id === id);
+    const label = item ? locationLabel(item) : "this location";
+    if (!window.confirm(`Remove "${detailGroup[0].names[0]}" from ${label}?`)) return;
     await supabase.from("items").delete().eq("id", id);
     showToast("Item removed");
     const remaining = detailGroup.filter(i => i.id !== id);
@@ -347,9 +354,10 @@ export default function App() {
   }
 
   async function deleteGroup(group) {
-    if (group.length > 1) {
-      if (!window.confirm(`Delete all ${group.length} locations for "${group[0].names[0]}"?`)) return;
-    }
+    const msg = group.length > 1
+      ? `Delete "${group[0].names[0]}" from all ${group.length} locations?`
+      : `Delete "${group[0].names[0]}"?`;
+    if (!window.confirm(msg)) return;
     await Promise.all(group.map(i => supabase.from("items").delete().eq("id", i.id)));
     showToast("Deleted");
     setDetailGroup(null);
@@ -588,37 +596,98 @@ export default function App() {
                   style={{ display: "none" }} onChange={handleEditPhotoAdd} />
 
                 <label style={s.label}>Locations</label>
-                {detailGroup.map(item => (
-                  <div key={item.id} style={s.locationEditRow}>
-                    <select style={{ ...s.select, flex: 1, fontSize: 13, padding: "8px 10px" }}
-                      value={item.room}
-                      onChange={async e => { await supabase.from("items").update({ room: e.target.value }).eq("id", item.id); fetchItems(); }}>
-                      {STOCKROOMS.map(r => <option key={r} value={r}>{r}</option>)}
-                    </select>
-                    <select style={{ ...s.select, width: 90, fontSize: 13, padding: "8px 8px" }}
-                      value={item.specific || ""}
-                      onChange={async e => { await supabase.from("items").update({ specific: e.target.value || null }).eq("id", item.id); fetchItems(); }}>
-                      <option value="">—</option>
-                      {SPECIFICS.map(o => <option key={o} value={o}>{o}</option>)}
-                    </select>
-                    <button style={s.deleteBtn} onClick={() => deleteItem(item.id)}>✕</button>
-                  </div>
-                ))}
+                {detailGroup.map(item => {
+                  const isOther = !STOCKROOMS.includes(item.room);
+                  const isPyxis = (item.specific || "").startsWith("Pyxis");
+                  return (
+                    <div key={item.id} style={{ marginBottom: 8 }}>
+                      <div style={s.locationEditRow}>
+                        <select style={{ ...s.select, flex: 1, fontSize: 13, padding: "8px 10px" }}
+                          value={isOther ? "Other" : item.room}
+                          onChange={async e => {
+                            if (e.target.value !== "Other") {
+                              await supabase.from("items").update({ room: e.target.value }).eq("id", item.id);
+                              fetchItems();
+                            }
+                          }}>
+                          {STOCKROOMS.map(r => <option key={r} value={r}>{r}</option>)}
+                          <option value="Other">Other (type manually)</option>
+                        </select>
+                        <select style={{ ...s.select, width: 90, fontSize: 13, padding: "8px 8px" }}
+                          value={isPyxis ? "Pyxis" : (item.specific || "")}
+                          onChange={async e => {
+                            const val = e.target.value;
+                            if (val !== "Pyxis") {
+                              await supabase.from("items").update({ specific: val || null }).eq("id", item.id);
+                              fetchItems();
+                            } else {
+                              await supabase.from("items").update({ specific: "Pyxis" }).eq("id", item.id);
+                              fetchItems();
+                            }
+                          }}>
+                          <option value="">—</option>
+                          {SPECIFICS.map(o => <option key={o} value={o}>{o}</option>)}
+                        </select>
+                        <button style={s.deleteBtn} onClick={() => deleteItem(item.id)}>✕</button>
+                      </div>
+                      {isOther && (
+                        <input style={{ ...s.input, fontSize: 13, marginTop: 4 }}
+                          placeholder="Type location name..."
+                          defaultValue={item.room}
+                          onBlur={async e => {
+                            if (e.target.value.trim()) {
+                              await supabase.from("items").update({ room: e.target.value.trim() }).eq("id", item.id);
+                              fetchItems();
+                            }
+                          }} />
+                      )}
+                      {isPyxis && (
+                        <select style={{ ...s.select, fontSize: 13, marginTop: 4 }}
+                          value={item.specific?.replace("Pyxis Door ", "") || ""}
+                          onChange={async e => {
+                            const door = e.target.value;
+                            const specific = door ? `Pyxis Door ${door}` : "Pyxis";
+                            await supabase.from("items").update({ specific }).eq("id", item.id);
+                            fetchItems();
+                          }}>
+                          <option value="">Select door...</option>
+                          {[1,2,3,4,5,6,7,8,9,10].map(d => <option key={d} value={d}>Door {d}</option>)}
+                        </select>
+                      )}
+                    </div>
+                  );
+                })}
                 {newLocationRows.map((row, i) => (
-                  <div key={`nlr-${i}`} style={s.locationEditRow}>
-                    <select style={{ ...s.select, flex: 1, fontSize: 13, padding: "8px 10px" }}
-                      value={row.room}
-                      onChange={e => { const u = [...newLocationRows]; u[i] = { ...u[i], room: e.target.value }; setNewLocationRows(u); }}>
-                      <option value="">Select location...</option>
-                      {STOCKROOMS.map(r => <option key={r} value={r}>{r}</option>)}
-                    </select>
-                    <select style={{ ...s.select, width: 90, fontSize: 13, padding: "8px 8px" }}
-                      value={row.specific}
-                      onChange={e => { const u = [...newLocationRows]; u[i] = { ...u[i], specific: e.target.value }; setNewLocationRows(u); }}>
-                      <option value="">—</option>
-                      {SPECIFICS.map(o => <option key={o} value={o}>{o}</option>)}
-                    </select>
-                    <button style={s.deleteBtn} onClick={() => setNewLocationRows(newLocationRows.filter((_, idx) => idx !== i))}>✕</button>
+                  <div key={`nlr-${i}`} style={{ marginBottom: 8 }}>
+                    <div style={s.locationEditRow}>
+                      <select style={{ ...s.select, flex: 1, fontSize: 13, padding: "8px 10px" }}
+                        value={row.room}
+                        onChange={e => { const u = [...newLocationRows]; u[i] = { ...u[i], room: e.target.value, customRoom: "" }; setNewLocationRows(u); }}>
+                        <option value="">Select location...</option>
+                        {STOCKROOMS.map(r => <option key={r} value={r}>{r}</option>)}
+                        <option value="Other">Other (type manually)</option>
+                      </select>
+                      <select style={{ ...s.select, width: 90, fontSize: 13, padding: "8px 8px" }}
+                        value={row.specific || ""}
+                        onChange={e => { const u = [...newLocationRows]; u[i] = { ...u[i], specific: e.target.value, pyxisDoor: "" }; setNewLocationRows(u); }}>
+                        <option value="">—</option>
+                        {SPECIFICS.map(o => <option key={o} value={o}>{o}</option>)}
+                      </select>
+                      <button style={s.deleteBtn} onClick={() => setNewLocationRows(newLocationRows.filter((_, idx) => idx !== i))}>✕</button>
+                    </div>
+                    {row.room === "Other" && (
+                      <input style={{ ...s.input, fontSize: 13, marginTop: 4 }} placeholder="Type location name..."
+                        value={row.customRoom || ""}
+                        onChange={e => { const u = [...newLocationRows]; u[i] = { ...u[i], customRoom: e.target.value }; setNewLocationRows(u); }} />
+                    )}
+                    {row.specific === "Pyxis" && (
+                      <select style={{ ...s.select, fontSize: 13, marginTop: 4 }}
+                        value={row.pyxisDoor || ""}
+                        onChange={e => { const u = [...newLocationRows]; u[i] = { ...u[i], pyxisDoor: e.target.value }; setNewLocationRows(u); }}>
+                        <option value="">Select door...</option>
+                        {[1,2,3,4,5,6,7,8,9,10].map(d => <option key={d} value={d}>Door {d}</option>)}
+                      </select>
+                    )}
                   </div>
                 ))}
                 <button style={s.addNameBtn} onClick={() => setNewLocationRows([...newLocationRows, { room: "", specific: "" }])}>
@@ -679,16 +748,27 @@ export default function App() {
               <button style={s.addNameBtn} onClick={addNewNameField}>+ Add another name</button>
 
               <label style={s.label}>Location</label>
-              <select style={s.select} value={newRoom} onChange={e => setNewRoom(e.target.value)}>
+              <select style={s.select} value={newRoom} onChange={e => { setNewRoom(e.target.value); setNewCustomRoom(""); }}>
                 <option value="">Select a location...</option>
                 {STOCKROOMS.map(r => <option key={r} value={r}>{r}</option>)}
+                <option value="Other">Other (type manually)</option>
               </select>
+              {newRoom === "Other" && (
+                <input style={{ ...s.input, marginTop: 6 }} placeholder="Type location name..."
+                  value={newCustomRoom} onChange={e => setNewCustomRoom(e.target.value)} />
+              )}
 
               <label style={s.label}>More Specific <span style={s.optional}>(optional)</span></label>
-              <select style={s.select} value={newSpecific} onChange={e => setNewSpecific(e.target.value)}>
+              <select style={s.select} value={newSpecific} onChange={e => { setNewSpecific(e.target.value); setNewPyxisDoor(""); }}>
                 <option value="">Select...</option>
                 {SPECIFICS.map(o => <option key={o} value={o}>{o}</option>)}
               </select>
+              {newSpecific === "Pyxis" && (
+                <select style={{ ...s.select, marginTop: 6 }} value={newPyxisDoor} onChange={e => setNewPyxisDoor(e.target.value)}>
+                  <option value="">Select door...</option>
+                  {[1,2,3,4,5,6,7,8,9,10].map(d => <option key={d} value={d}>Door {d}</option>)}
+                </select>
+              )}
 
               <label style={s.label}>Notes <span style={s.optional}>(optional)</span></label>
               <textarea style={s.textarea} placeholder="e.g. Used to stop bleeding via compression"
