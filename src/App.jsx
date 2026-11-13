@@ -24,6 +24,7 @@ const OTHER = "__other";
 const CACHE_KEY = "itemfinder:items";
 const EMAIL_KEY = "itemfinder:email";
 const ROOM_KEY = "itemfinder:lastRoom";
+const FAVS_KEY = "itemfinder:favorites";
 
 /* ───────────────────────── helpers ───────────────────────── */
 
@@ -232,6 +233,26 @@ const Icon = {
   unlock: (
     <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <rect x="5" y="11" width="14" height="9" rx="2" /><path d="M8 11V8a4 4 0 017.5-2" />
+    </svg>
+  ),
+  star: (
+    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 3.5l2.7 5.5 6 .9-4.4 4.2 1 6-5.3-2.8-5.3 2.8 1-6L3.3 9.9l6-.9z" />
+    </svg>
+  ),
+  starOn: (
+    <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 3.5l2.7 5.5 6 .9-4.4 4.2 1 6-5.3-2.8-5.3 2.8 1-6L3.3 9.9l6-.9z" />
+    </svg>
+  ),
+  mark: (
+    <svg className="brand-mark" viewBox="0 0 32 32" width="32" height="32" aria-hidden="true">
+      <rect width="32" height="32" rx="9" fill="var(--ink)" />
+      <g fill="none" stroke="var(--on-ink)" strokeWidth="2.4" strokeLinecap="round">
+        <circle cx="14" cy="14" r="7" />
+        <path d="M19.2 19.2L25 25" />
+        <path d="M14 10.8v6.4M10.8 14h6.4" />
+      </g>
     </svg>
   ),
   camera: (
@@ -521,6 +542,10 @@ export default function App() {
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const [session, setSession] = useState(null);
+  // Favorites are kept on this phone or computer only, so everyone has their own.
+  const [favs, setFavs] = useState(() => {
+    try { return JSON.parse(store(FAVS_KEY) || "[]"); } catch { return []; }
+  });
 
   const [screen, setScreen] = useState("search"); // search | detail | edit | add
   const [query, setQuery] = useState("");
@@ -632,6 +657,19 @@ export default function App() {
     [entries, detailIds]
   );
 
+  const isFav = (entry) => entry.rows.some((r) => favs.includes(r.id));
+  function toggleFav(entry) {
+    const ids = entry.rows.map((r) => r.id);
+    const next = isFav(entry) ? favs.filter((id) => !ids.includes(id)) : [...favs, ...ids];
+    setFavs(next);
+    store(FAVS_KEY, JSON.stringify(next));
+  }
+  const favorites = useMemo(
+    () => entries.filter((e) => isFav(e) && inRooms(e)).sort((a, b) => a.names[0].localeCompare(b.names[0])),
+    [entries, favs, roomFilter]
+  );
+  const listed = q || showAll ? results : favorites;
+
   const shownRows = (entry) => (roomFilter.length === 0 ? entry.rows : entry.rows.filter((r) => roomFilter.includes(r.room)));
 
   /* navigation */
@@ -729,6 +767,11 @@ export default function App() {
         removeStoredPhotos(dropped);
       }
 
+      if (editing && isFav(editing)) {
+        const next = uniq([...favs, ...ids]);
+        setFavs(next);
+        store(FAVS_KEY, JSON.stringify(next));
+      }
       setDetailIds(ids);
       if (editing) { notify("Saved"); setScreen("detail"); }
       else {
@@ -790,6 +833,7 @@ export default function App() {
         <div className="bar">
           {screen === "search" ? (
             <div className="brand">
+              {Icon.mark}
               <span className="brand-name">Item Finder</span>
               <span className="brand-site">Stamford ED</span>
             </div>
@@ -872,13 +916,24 @@ export default function App() {
               </div>
             )}
 
+            {!q && !showAll && (loaded || rows.length > 0) && (
+              <>
+                <h2 className="section">Favorites</h2>
+                {favorites.length === 0 && (
+                  <p className="muted fav-hint">
+                    {favs.length > 0 && filtered ? "No favorites in the selected rooms." : "Tap the star on any item to keep it here."}
+                  </p>
+                )}
+              </>
+            )}
+
             <ul className="results">
-              {results.map((entry) => {
+              {listed.map((entry) => {
                 const main = bestName(entry, q);
                 const others = entry.names.filter((n) => n !== main);
                 return (
-                  <li key={entry.rows[0].id}>
-                    <button className="result" onClick={() => openDetail(entry)}>
+                  <li key={entry.rows[0].id} className="result">
+                    <button className="result-main" onClick={() => openDetail(entry)}>
                       {entry.photos.length > 0 ? (
                         <span className="thumb">
                           <img src={entry.photos[0]} alt="" loading="lazy" />
@@ -896,7 +951,11 @@ export default function App() {
                         )}
                         <span className="tags">{shownRows(entry).map((r) => <Tag key={r.id} row={r} />)}</span>
                       </span>
-                      <span className="result-go">{Icon.chevron}</span>
+                    </button>
+                    <button className={`star ${isFav(entry) ? "on" : ""}`} aria-pressed={isFav(entry)}
+                      aria-label={isFav(entry) ? `Remove ${main} from favorites` : `Add ${main} to favorites`}
+                      onClick={() => toggleFav(entry)}>
+                      {isFav(entry) ? Icon.starOn : Icon.star}
                     </button>
                   </li>
                 );
@@ -911,7 +970,14 @@ export default function App() {
         )}
         {screen === "detail" && detail && (
           <article className="detail">
-            <h1 className="page-title">{detail.names[0]}</h1>
+            <div className="title-row">
+              <h1 className="page-title">{detail.names[0]}</h1>
+              <button className={`star boxed ${isFav(detail) ? "on" : ""}`} aria-pressed={isFav(detail)}
+                aria-label={isFav(detail) ? "Remove from favorites" : "Add to favorites"}
+                onClick={() => toggleFav(detail)}>
+                {isFav(detail) ? Icon.starOn : Icon.star}
+              </button>
+            </div>
             {detail.names.length > 1 && <p className="aka">Also called {detail.names.slice(1).join(", ")}</p>}
 
             <h2 className="section">Where to find it</h2>
@@ -1011,10 +1077,10 @@ const CSS = `
 
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
-body { margin: 0; background: var(--bg); }
+body { margin: 0; background: var(--bg) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240' viewBox='0 0 240 240'%3E%3Cg fill='none' stroke='%237B8794' stroke-opacity='.17' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M30 20v20M20 30h20'/%3E%3Cg transform='rotate(30 120 40)'%3E%3Crect x='100' y='32' width='40' height='16' rx='8'/%3E%3Cpath d='M120 32v16'/%3E%3C/g%3E%3Ccircle cx='212' cy='36' r='9'/%3E%3Cpath d='M205.600 42.400l12.800-12.800'/%3E%3Cg transform='rotate(-35 196 112)'%3E%3Crect x='172' y='103' width='48' height='18' rx='9'/%3E%3Crect x='188' y='103' width='16' height='18'/%3E%3C/g%3E%3Cg transform='rotate(45 62 128)'%3E%3Crect x='44' y='122' width='30' height='12' rx='2'/%3E%3Cpath d='M74 128h14M44 128H34M34 121v14M52 122v5M60 122v5'/%3E%3C/g%3E%3Cpath d='M128 96c8 10 12 16 12 21a12 12 0 0 1-24 0c0-5 4-11 12-21z'/%3E%3Cpath d='M10 206h20l8-14 10 28 8-14h24'/%3E%3Cpath d='M136 172h30v24h-30zM136 172l5-8h20l5 8M151 164v8'/%3E%3Cpath d='M214 196v20M204 206h20'/%3E%3C/g%3E%3C/svg%3E") top center / 240px 240px repeat; }
 .app {
   font-family: "Atkinson Hyperlegible", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  color: var(--ink); background: var(--bg); min-height: 100vh; min-height: 100dvh;
+  color: var(--ink); min-height: 100vh; min-height: 100dvh;
   max-width: 560px; margin: 0 auto; font-size: 16px; line-height: 1.4;
   padding-bottom: calc(32px + env(safe-area-inset-bottom));
 }
@@ -1030,7 +1096,9 @@ body { margin: 0; background: var(--bg); }
   padding: calc(10px + env(safe-area-inset-top)) 16px 10px; border-bottom: 1px solid var(--line);
 }
 .bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 44px; }
-.brand { display: flex; align-items: baseline; gap: 8px; }
+.brand { display: flex; align-items: center; gap: 9px; }
+.brand-mark { flex: none; display: block; }
+.brand-site { align-self: flex-end; padding-bottom: 5px; }
 .brand-name { font-size: 20px; font-weight: 700; letter-spacing: -0.01em; }
 .brand-site { font-size: 14px; color: var(--muted); }
 .bar-actions { display: flex; align-items: center; gap: 8px; }
@@ -1097,15 +1165,25 @@ body { margin: 0; background: var(--bg); }
 .rooms { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 
 .banner { margin-top: 12px; padding: 10px 12px; border-radius: 10px; border: 1.5px solid var(--z-yellow); background: var(--surface); font-size: 15px; }
-.landing { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 36px 8px 12px; text-align: center; }
+.landing { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 22px 8px 4px; text-align: center; }
 .empty { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 36px 8px; text-align: center; }
 
 /* results */
 .results { display: flex; flex-direction: column; gap: 8px; margin-top: 12px !important; }
 .result {
-  display: flex; align-items: center; gap: 12px; width: 100%; padding: 10px 8px 10px 10px; text-align: left;
-  background: var(--surface); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow);
+  display: flex; align-items: stretch; background: var(--surface); border: 1px solid var(--line);
+  border-radius: 12px; box-shadow: var(--shadow); overflow: hidden;
 }
+.result-main {
+  display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; padding: 10px 0 10px 10px;
+  text-align: left; background: none; border: 0;
+}
+.star { flex: none; width: 50px; display: flex; align-items: center; justify-content: center; background: none; border: 0; color: var(--muted); }
+.star.on { color: var(--z-yellow); }
+.star.boxed { width: 48px; height: 48px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.title-row { display: flex; align-items: flex-start; gap: 12px; }
+.title-row .page-title { flex: 1; }
+.fav-hint { padding: 4px 0 8px; }
 .thumb { position: relative; flex: none; width: 60px; height: 60px; border-radius: 8px; overflow: hidden; background: var(--field); }
 .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .thumb.blank { display: flex; align-items: center; justify-content: center; font-size: 22px; font-weight: 700; color: var(--line); border: 1.5px solid var(--line); }
