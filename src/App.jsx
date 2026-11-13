@@ -932,7 +932,7 @@ export default function App() {
             <span className="searchbox-icon">{Icon.search}</span>
             <input ref={searchRef} className="input search-input" type="search" inputMode="search" enterKeyHint="search"
               placeholder="Search by any name" aria-label="Search items" autoComplete="off" autoCorrect="off"
-              value={query} onChange={(e) => setQuery(e.target.value)} />
+              value={query} onChange={(e) => { setQuery(e.target.value); setFilterOpen(false); }} />
             {query && (
               <button className="searchbox-clear" onClick={clearSearch} aria-label="Clear search">{Icon.close}</button>
             )}
@@ -1117,25 +1117,16 @@ const CSS = `
 @import url("https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&display=swap");
 
 :root {
-  --bg: #EDF0F3; --surface: #FFFFFF; --field: #F5F7F9; --ink: #17212B; --muted: #566472;
-  --line: #D3DAE1; --link: #1B5BB8; --danger: #B3261E; --mark: #FFE38A; --mark-ink: #17212B;
-  --on-ink: #FFFFFF; --shadow: 0 1px 2px rgba(23,33,43,.08);
+  --bg: #0F151B; --surface: #19222B; --field: #111920; --ink: #E8EDF2; --muted: #98A6B3;
+  --line: #2B3743; --link: #8AB8FF; --danger: #FF8A80; --match: #F2545B;
+  --on-ink: #0F151B; --shadow: none;
   --z-red: #D23B30; --z-yellow: #F2B705; --z-green: #2F9E5B; --z-peds: #7E57C2; --z-other: #7B8794;
-  color-scheme: light;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0F151B; --surface: #19222B; --field: #111920; --ink: #E8EDF2; --muted: #98A6B3;
-    --line: #2B3743; --link: #8AB8FF; --danger: #FF8A80; --mark: #6B5400; --mark-ink: #FFF6D6;
-    --on-ink: #0F151B; --shadow: none;
-    color-scheme: dark;
-  }
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
-body { margin: 0; background: var(--bg) url("${pattern("4C7FD9", ".085")}") top center / 240px 240px repeat; }
-@media (prefers-color-scheme: dark) { body { background-image: url("${pattern("6FA0F0", ".07")}"); } }
+body { margin: 0; background: var(--bg) url("${pattern("6FA0F0", ".07")}") top center / 240px 240px repeat; }
 .app {
   font-family: "Atkinson Hyperlegible", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   color: var(--ink); min-height: 100vh; min-height: 100dvh;
@@ -1252,7 +1243,7 @@ body { margin: 0; background: var(--bg) url("${pattern("4C7FD9", ".085")}") top 
 .result-name { font-size: 17px; font-weight: 700; line-height: 1.25; }
 .result-also { font-size: 14px; color: var(--muted); line-height: 1.3; }
 .result-go { flex: none; color: var(--muted); display: flex; }
-.app mark { background: var(--mark); color: var(--mark-ink); border-radius: 3px; padding: 0 1px; }
+.app mark { background: none; color: var(--match); font-weight: 700; }
 .tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 3px; }
 .tag {
   display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px 3px 7px; border-radius: 6px;
