@@ -550,6 +550,7 @@ export default function App() {
   const [screen, setScreen] = useState("search"); // search | detail | edit | add
   const [query, setQuery] = useState("");
   const [showAll, setShowAll] = useState(false);
+  const [favQuery, setFavQuery] = useState("");
   const [roomFilter, setRoomFilter] = useState([]);
   const [filterOpen, setFilterOpen] = useState(false);
   const [detailIds, setDetailIds] = useState([]);
@@ -564,7 +565,9 @@ export default function App() {
 
   const searchRef = useRef(null);
   const screenRef = useRef("search");
-  const savedScroll = useRef(0);
+  const stack = useRef(["search"]);   // screens opened on top of each other
+  const scrolls = useRef([0]);        // where each one was scrolled to
+  const nextScroll = useRef(0);
   const askResolve = useRef(null);
   const toastTimer = useRef(null);
 
@@ -590,7 +593,12 @@ export default function App() {
     const onVisible = () => { if (document.visibilityState === "visible") fetchRows(); };
     document.addEventListener("visibilitychange", onVisible);
     // The phone's back gesture returns to the results instead of leaving the app.
-    const onPop = () => setScreen("search");
+    const onPop = (e) => {
+      const depth = Math.min((e.state && e.state.depth) || 0, stack.current.length - 1);
+      stack.current.length = depth + 1;
+      nextScroll.current = scrolls.current[depth] || 0;
+      setScreen(stack.current[depth]);
+    };
     window.addEventListener("popstate", onPop);
     return () => {
       sub.subscription.unsubscribe();
@@ -601,17 +609,27 @@ export default function App() {
 
   useEffect(() => {
     screenRef.current = screen;
-    window.scrollTo(0, screen === "search" ? savedScroll.current : 0);
+    window.scrollTo(0, nextScroll.current);
   }, [screen]);
 
-  function go(next) {
-    const cur = screenRef.current;
-    if (cur === "search" && next !== "search") {
-      savedScroll.current = window.scrollY;
-      window.history.pushState({ inner: true }, "");
-    }
-    if (cur !== "search" && next === "search") { window.history.back(); return; }
+  // open a screen on top of the current one
+  function push(next) {
+    const depth = stack.current.length - 1;
+    scrolls.current[depth] = window.scrollY;
+    stack.current.push(next);
+    window.history.pushState({ depth: depth + 1 }, "");
+    nextScroll.current = 0;
     setScreen(next);
+  }
+  // switch the current screen in place (item page <-> its edit form)
+  function swap(next) {
+    stack.current[stack.current.length - 1] = next;
+    nextScroll.current = 0;
+    setScreen(next);
+  }
+  // go back one screen; the phone's back gesture does the same thing
+  function back() {
+    if (stack.current.length > 1) window.history.back();
   }
 
   function notify(msg, type = "ok") {
@@ -665,23 +683,31 @@ export default function App() {
     store(FAVS_KEY, JSON.stringify(next));
   }
   const favorites = useMemo(
-    () => entries.filter((e) => isFav(e) && inRooms(e)).sort((a, b) => a.names[0].localeCompare(b.names[0])),
-    [entries, favs, roomFilter]
+    () => entries.filter(isFav).sort((a, b) => a.names[0].localeCompare(b.names[0])),
+    [entries, favs]
   );
-  const listed = q || showAll ? results : favorites;
+  const fq = favQuery.trim().toLowerCase();
+  const favResults = useMemo(() => {
+    if (!fq) return favorites;
+    return favorites
+      .map((entry) => ({ entry, score: matchScore(entry, fq) }))
+      .filter((x) => x.score !== Infinity)
+      .sort((a, b) => a.score - b.score || a.entry.names[0].localeCompare(b.entry.names[0]))
+      .map((x) => x.entry);
+  }, [favorites, fq]);
 
   const shownRows = (entry) => (roomFilter.length === 0 ? entry.rows : entry.rows.filter((r) => roomFilter.includes(r.room)));
 
   /* navigation */
   function openDetail(entry) {
     setDetailIds(entry.rows.map((r) => r.id));
-    go("detail");
+    push("detail");
   }
 
   function startAdd(name = "") {
     setFormSeed({ names: [name], notes: "", photos: [], locations: [blankLoc(store(ROOM_KEY) || "")] });
     setFormKey((k) => k + 1);
-    go("add");
+    push("add");
   }
 
   function startEdit(entry, withBlankLocation = false) {
@@ -693,7 +719,7 @@ export default function App() {
       locations: [...entry.rows.map(rowToLoc), ...(withBlankLocation ? [blankLoc()] : [])],
     });
     setFormKey((k) => k + 1);
-    go("edit");
+    swap("edit");
   }
 
   /* saving */
@@ -773,10 +799,10 @@ export default function App() {
         store(FAVS_KEY, JSON.stringify(next));
       }
       setDetailIds(ids);
-      if (editing) { notify("Saved"); setScreen("detail"); }
+      if (editing) { notify("Saved"); swap("detail"); }
       else {
         notify(target ? `Added a location to “${target.names[0]}”` : `Added “${names[0]}”`);
-        go("search");
+        back();
       }
     } catch (err) {
       notify(err.message || "The change was not saved", "error");
@@ -801,7 +827,7 @@ export default function App() {
       const latest = await fetchRows();
       if (latest) removeStoredPhotos(entry.photos.filter((u) => !latest.some((r) => photosOf(r).includes(u))));
       notify(`Deleted “${entry.names[0]}”`);
-      go("search");
+      back();
     } catch (err) {
       notify(err.message || "The item was not deleted", "error");
     } finally {
@@ -812,7 +838,7 @@ export default function App() {
   async function lock() {
     await supabase.auth.signOut();
     setSession(null);
-    if (screenRef.current === "edit" || screenRef.current === "add") go("search");
+    if (screenRef.current === "edit" || screenRef.current === "add") back();
     notify("Editing locked");
   }
 
@@ -820,6 +846,40 @@ export default function App() {
     setRoomFilter((prev) => (prev.includes(room) ? prev.filter((r) => r !== room) : [...prev, room]));
 
   const clearSearch = () => { setQuery(""); searchRef.current && searchRef.current.focus(); };
+
+  function renderRow(entry, term, rowsShown) {
+    const main = bestName(entry, term);
+    const others = entry.names.filter((n) => n !== main);
+    const fav = isFav(entry);
+    return (
+      <li key={entry.rows[0].id} className="result">
+        <button className="result-main" onClick={() => openDetail(entry)}>
+          {entry.photos.length > 0 ? (
+            <span className="thumb">
+              <img src={entry.photos[0]} alt="" loading="lazy" />
+              {entry.photos.length > 1 && <span className="thumb-count">{entry.photos.length}</span>}
+            </span>
+          ) : (
+            <span className="thumb blank" aria-hidden="true">{main.charAt(0).toUpperCase()}</span>
+          )}
+          <span className="result-text">
+            <span className="result-name"><Highlight text={main} q={term} /></span>
+            {others.length > 0 && (
+              <span className="result-also">
+                {others.map((n, i) => (<span key={n}>{i > 0 && ", "}<Highlight text={n} q={term} /></span>))}
+              </span>
+            )}
+            <span className="tags">{rowsShown.map((r) => <Tag key={r.id} row={r} />)}</span>
+          </span>
+        </button>
+        <button className={`star ${fav ? "on" : ""}`} aria-pressed={fav}
+          aria-label={fav ? `Remove ${main} from favorites` : `Add ${main} to favorites`}
+          onClick={() => toggleFav(entry)}>
+          {fav ? Icon.starOn : Icon.star}
+        </button>
+      </li>
+    );
+  }
 
   /* ── render ── */
   const filtered = roomFilter.length > 0;
@@ -838,7 +898,7 @@ export default function App() {
               <span className="brand-site">Stamford ED</span>
             </div>
           ) : (
-            <button className="back" onClick={() => (screen === "edit" ? setScreen("detail") : go("search"))}>
+            <button className="back" onClick={() => (screen === "edit" ? swap("detail") : back())}>
               {Icon.back} {screen === "edit" ? "Cancel" : "Back"}
             </button>
           )}
@@ -854,6 +914,18 @@ export default function App() {
             </button>
           </div>
         </div>
+
+        {screen === "favorites" && favorites.length > 0 && (
+          <div className="searchbox">
+            <span className="searchbox-icon">{Icon.search}</span>
+            <input className="input search-input" type="search" inputMode="search" enterKeyHint="search"
+              placeholder="Search your favorites" aria-label="Search favorites" autoComplete="off" autoCorrect="off"
+              value={favQuery} onChange={(e) => setFavQuery(e.target.value)} />
+            {favQuery && (
+              <button className="searchbox-clear" onClick={() => setFavQuery("")} aria-label="Clear search">{Icon.close}</button>
+            )}
+          </div>
+        )}
 
         {screen === "search" && (
           <div className="searchbox">
@@ -876,6 +948,10 @@ export default function App() {
               <button className={`chip ${filterOpen || filtered ? "active" : ""}`} aria-expanded={filterOpen}
                 onClick={() => setFilterOpen((v) => !v)}>
                 {filtered ? `Rooms: ${roomFilter.length} selected` : "Filter by room"}
+              </button>
+              <button className="chip" onClick={() => { setFavQuery(""); push("favorites"); }}>
+                <span className={`chip-star ${favorites.length > 0 ? "on" : ""}`}>{favorites.length > 0 ? Icon.starOn : Icon.star}</span>
+                Favorites{favorites.length > 0 ? ` (${favorites.length})` : ""}
               </button>
               {filtered && <button className="link" onClick={() => setRoomFilter([])}>Clear</button>}
             </div>
@@ -916,50 +992,27 @@ export default function App() {
               </div>
             )}
 
-            {!q && !showAll && (loaded || rows.length > 0) && (
-              <>
-                <h2 className="section">Favorites</h2>
-                {favorites.length === 0 && (
-                  <p className="muted fav-hint">
-                    {favs.length > 0 && filtered ? "No favorites in the selected rooms." : "Tap the star on any item to keep it here."}
-                  </p>
-                )}
-              </>
-            )}
-
             <ul className="results">
-              {listed.map((entry) => {
-                const main = bestName(entry, q);
-                const others = entry.names.filter((n) => n !== main);
-                return (
-                  <li key={entry.rows[0].id} className="result">
-                    <button className="result-main" onClick={() => openDetail(entry)}>
-                      {entry.photos.length > 0 ? (
-                        <span className="thumb">
-                          <img src={entry.photos[0]} alt="" loading="lazy" />
-                          {entry.photos.length > 1 && <span className="thumb-count">{entry.photos.length}</span>}
-                        </span>
-                      ) : (
-                        <span className="thumb blank" aria-hidden="true">{main.charAt(0).toUpperCase()}</span>
-                      )}
-                      <span className="result-text">
-                        <span className="result-name"><Highlight text={main} q={q} /></span>
-                        {others.length > 0 && (
-                          <span className="result-also">
-                            {others.map((n, i) => (<span key={n}>{i > 0 && ", "}<Highlight text={n} q={q} /></span>))}
-                          </span>
-                        )}
-                        <span className="tags">{shownRows(entry).map((r) => <Tag key={r.id} row={r} />)}</span>
-                      </span>
-                    </button>
-                    <button className={`star ${isFav(entry) ? "on" : ""}`} aria-pressed={isFav(entry)}
-                      aria-label={isFav(entry) ? `Remove ${main} from favorites` : `Add ${main} to favorites`}
-                      onClick={() => toggleFav(entry)}>
-                      {isFav(entry) ? Icon.starOn : Icon.star}
-                    </button>
-                  </li>
-                );
-              })}
+              {results.map((entry) => renderRow(entry, q, shownRows(entry)))}
+            </ul>
+          </>
+        )}
+
+        {/* ── favorites ── */}
+        {screen === "favorites" && (
+          <>
+            <h1 className="page-title">Favorites</h1>
+            {favorites.length === 0 && (
+              <div className="empty">
+                <p>No favorites yet.</p>
+                <p className="muted">Tap the star on any item to keep it here. Favorites are saved on this device only.</p>
+              </div>
+            )}
+            {favorites.length > 0 && favResults.length === 0 && (
+              <div className="empty"><p>None of your favorites match “{favQuery.trim()}”.</p></div>
+            )}
+            <ul className="results">
+              {favResults.map((entry) => renderRow(entry, fq, entry.rows))}
             </ul>
           </>
         )}
@@ -1036,7 +1089,7 @@ export default function App() {
             saving={saving}
             onPickExisting={(entry) => startEdit(entry, true)}
             onSubmit={(draft) => saveItem(draft, screen === "edit" ? detail : null)}
-            onCancel={() => (screen === "edit" ? setScreen("detail") : go("search"))}
+            onCancel={() => (screen === "edit" ? swap("detail") : back())}
             onDelete={() => detail && deleteEntry(detail)}
             onOpenPhotos={(photos, index) => setLightbox({ photos, index })}
           />
@@ -1055,6 +1108,10 @@ export default function App() {
 }
 
 /* ───────────────────────── styles ───────────────────────── */
+
+// Faint supply-icon wallpaper. Tinted blue so it never reads as text or a button outline.
+const pattern = (color, opacity) =>
+  `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240' viewBox='0 0 240 240'%3E%3Cg fill='none' stroke='%23${color}' stroke-opacity='${opacity}' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M30 20v20M20 30h20'/%3E%3Cg transform='rotate(30 120 40)'%3E%3Crect x='100' y='32' width='40' height='16' rx='8'/%3E%3Cpath d='M120 32v16'/%3E%3C/g%3E%3Ccircle cx='212' cy='36' r='9'/%3E%3Cpath d='M205.600 42.400l12.800-12.800'/%3E%3Cg transform='rotate(-35 196 112)'%3E%3Crect x='172' y='103' width='48' height='18' rx='9'/%3E%3Crect x='188' y='103' width='16' height='18'/%3E%3C/g%3E%3Cg transform='rotate(45 62 128)'%3E%3Crect x='44' y='122' width='30' height='12' rx='2'/%3E%3Cpath d='M74 128h14M44 128H34M34 121v14M52 122v5M60 122v5'/%3E%3C/g%3E%3Cpath d='M128 96c8 10 12 16 12 21a12 12 0 0 1-24 0c0-5 4-11 12-21z'/%3E%3Cpath d='M10 206h20l8-14 10 28 8-14h24'/%3E%3Cpath d='M136 172h30v24h-30zM136 172l5-8h20l5 8M151 164v8'/%3E%3Cpath d='M214 196v20M204 206h20'/%3E%3C/g%3E%3C/svg%3E`;
 
 const CSS = `
 @import url("https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&display=swap");
@@ -1077,7 +1134,8 @@ const CSS = `
 
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
-body { margin: 0; background: var(--bg) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240' viewBox='0 0 240 240'%3E%3Cg fill='none' stroke='%237B8794' stroke-opacity='.17' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M30 20v20M20 30h20'/%3E%3Cg transform='rotate(30 120 40)'%3E%3Crect x='100' y='32' width='40' height='16' rx='8'/%3E%3Cpath d='M120 32v16'/%3E%3C/g%3E%3Ccircle cx='212' cy='36' r='9'/%3E%3Cpath d='M205.600 42.400l12.800-12.800'/%3E%3Cg transform='rotate(-35 196 112)'%3E%3Crect x='172' y='103' width='48' height='18' rx='9'/%3E%3Crect x='188' y='103' width='16' height='18'/%3E%3C/g%3E%3Cg transform='rotate(45 62 128)'%3E%3Crect x='44' y='122' width='30' height='12' rx='2'/%3E%3Cpath d='M74 128h14M44 128H34M34 121v14M52 122v5M60 122v5'/%3E%3C/g%3E%3Cpath d='M128 96c8 10 12 16 12 21a12 12 0 0 1-24 0c0-5 4-11 12-21z'/%3E%3Cpath d='M10 206h20l8-14 10 28 8-14h24'/%3E%3Cpath d='M136 172h30v24h-30zM136 172l5-8h20l5 8M151 164v8'/%3E%3Cpath d='M214 196v20M204 206h20'/%3E%3C/g%3E%3C/svg%3E") top center / 240px 240px repeat; }
+body { margin: 0; background: var(--bg) url("${pattern("4C7FD9", ".085")}") top center / 240px 240px repeat; }
+@media (prefers-color-scheme: dark) { body { background-image: url("${pattern("6FA0F0", ".07")}"); } }
 .app {
   font-family: "Atkinson Hyperlegible", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   color: var(--ink); min-height: 100vh; min-height: 100dvh;
@@ -1155,7 +1213,7 @@ body { margin: 0; background: var(--bg) url("data:image/svg+xml,%3Csvg xmlns='ht
 .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; flex: none; }
 
 /* filter */
-.filterbar { display: flex; align-items: center; gap: 14px; }
+.filterbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; }
 .chip {
   display: inline-flex; align-items: center; gap: 7px; min-height: 40px; padding: 0 13px; border-radius: 20px;
   border: 1.5px solid var(--line); background: var(--surface); font-size: 15px; text-align: left;
@@ -1183,7 +1241,9 @@ body { margin: 0; background: var(--bg) url("data:image/svg+xml,%3Csvg xmlns='ht
 .star.boxed { width: 48px; height: 48px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
 .title-row { display: flex; align-items: flex-start; gap: 12px; }
 .title-row .page-title { flex: 1; }
-.fav-hint { padding: 4px 0 8px; }
+.chip-star { display: flex; color: var(--muted); }
+.chip-star.on { color: var(--z-yellow); }
+.chip-star svg { width: 18px; height: 18px; }
 .thumb { position: relative; flex: none; width: 60px; height: 60px; border-radius: 8px; overflow: hidden; background: var(--field); }
 .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .thumb.blank { display: flex; align-items: center; justify-content: center; font-size: 22px; font-weight: 700; color: var(--line); border: 1.5px solid var(--line); }
