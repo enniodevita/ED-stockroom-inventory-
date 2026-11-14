@@ -342,6 +342,11 @@ function ConfirmSheet({ ask, onAnswer }) {
 }
 
 function RoomSheet({ rooms, picked, onChange, onClose }) {
+  const [pull, setPull] = useState(0);        // how far the panel is being dragged down, in px
+  const [closing, setClosing] = useState(false);
+  const listRef = useRef(null);
+  const drag = useRef(null);
+
   useEffect(() => {
     const onKey = (e) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKey);
@@ -352,14 +357,41 @@ function RoomSheet({ rooms, picked, onChange, onClose }) {
 
   const toggle = (room) => onChange(picked.includes(room) ? picked.filter((r) => r !== room) : [...picked, room]);
 
+  // Swipe down to close. A swipe that starts inside the list only counts when the list is already at its top,
+  // so scrolling the rooms never closes the panel by accident.
+  function onTouchStart(e) {
+    const list = listRef.current;
+    const inList = list && list.contains(e.target);
+    drag.current = { y: e.touches[0].clientY, ok: !inList || list.scrollTop <= 0 };
+  }
+  function onTouchMove(e) {
+    const d = drag.current;
+    if (!d || !d.ok) return;
+    const dy = e.touches[0].clientY - d.y;
+    if (dy < -6) { d.ok = false; setPull(0); return; } // moving up: this is a scroll, not a dismiss
+    setPull(Math.max(0, dy));
+  }
+  function onTouchEnd() {
+    drag.current = null;
+    if (pull > 90) { setClosing(true); setTimeout(onClose, 160); }
+    else setPull(0);
+  }
+
+  const style = closing
+    ? { transform: "translateY(100%)", transition: "transform .16s ease-in" }
+    : { transform: `translateY(${pull}px)`, transition: pull ? "none" : "transform .18s ease-out" };
+
   return (
     <div className="scrim" onClick={onClose}>
-      <div className="sheet room-sheet" role="dialog" aria-modal="true" aria-label="Filter by room" onClick={(e) => e.stopPropagation()}>
+      <div className="sheet room-sheet" role="dialog" aria-modal="true" aria-label="Filter by room" style={style}
+        onClick={(e) => e.stopPropagation()}
+        onTouchStart={onTouchStart} onTouchMove={onTouchMove} onTouchEnd={onTouchEnd} onTouchCancel={onTouchEnd}>
+        <div className="grabber" aria-hidden="true" />
         <div className="room-sheet-head">
           <h2>Filter by room</h2>
           {picked.length > 0 && <button className="link" onClick={() => onChange([])}>Clear all</button>}
         </div>
-        <div className="rooms">
+        <div className="rooms" ref={listRef}>
           {ZONES.map(([zone, label]) => {
             const inZone = rooms.filter((r) => zoneOf(r) === zone);
             if (inZone.length === 0) return null;
@@ -389,9 +421,7 @@ function RoomSheet({ rooms, picked, onChange, onClose }) {
           })}
         </div>
         <div className="room-sheet-foot">
-          <button className="btn" onClick={onClose}>
-            {picked.length === 0 ? "Done" : `Show ${picked.length} room${picked.length === 1 ? "" : "s"}`}
-          </button>
+          <button className="btn" onClick={onClose}>Done</button>
         </div>
       </div>
     </div>
@@ -726,7 +756,7 @@ export default function App() {
   const filteredCount = useMemo(() => entries.filter(inRooms).length, [entries, roomFilter]);
 
   const results = useMemo(() => {
-    if (!q && !showAll) return [];
+    if (!q && !showAll && roomFilter.length === 0) return [];
     const pool = entries.filter(inRooms);
     if (!q) return pool.sort((a, b) => a.names[0].localeCompare(b.names[0]));
     return pool
@@ -1004,7 +1034,7 @@ export default function App() {
           <div className="searchbox">
             <span className="searchbox-icon">{Icon.search}</span>
             <input ref={searchRef} className="input search-input" type="search" inputMode="search" enterKeyHint="search"
-              placeholder="Search by any name" aria-label="Search items" autoComplete="off" autoCorrect="off"
+              placeholder="Search" aria-label="Search items" autoComplete="off" autoCorrect="off"
               value={query} onChange={(e) => setQuery(e.target.value)} />
             {query && (
               <button className="searchbox-clear" onClick={clearSearch} aria-label="Clear search">{Icon.close}</button>
@@ -1046,11 +1076,13 @@ export default function App() {
             )}
 
             {!q && (
-              <div className="landing">
+              <div className={`landing ${filtered ? "compact" : ""}`}>
                 <p className="muted">
-                  {!loaded && rows.length === 0 ? "Loading items…" : showAll ? `Showing ${countText}` : `${countText}. Type a name to search.`}
+                  {!loaded && rows.length === 0 ? "Loading items…"
+                    : filtered ? (filteredCount === 0 ? "Nothing is stored in the selected rooms yet." : countText)
+                    : showAll ? `Showing ${countText}` : `${countText}. Type a name to search.`}
                 </p>
-                {(loaded || rows.length > 0) && filteredCount > 0 && (
+                {!filtered && (loaded || rows.length > 0) && filteredCount > 0 && (
                   <button className="btn ghost" onClick={() => setShowAll((v) => !v)}>{showAll ? "Hide all" : "Show all"}</button>
                 )}
               </div>
@@ -1296,7 +1328,8 @@ body { margin: 0; background: var(--bg) url("${pattern("6FA0F0", ".07")}") top c
 
 /* room picker panel */
 .sheet.room-sheet { display: flex; flex-direction: column; padding: 0; max-height: 86vh; max-height: 86dvh; overflow: hidden; }
-.room-sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 18px 18px 12px; border-bottom: 1px solid var(--line); }
+.grabber { flex: none; width: 44px; height: 5px; border-radius: 3px; background: var(--line); margin: 10px auto 0; }
+.room-sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 18px 12px; border-bottom: 1px solid var(--line); }
 .rooms { flex: 1; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; padding: 4px 18px 12px; }
 .zone { margin-top: 14px; }
 .zone-head { display: flex; align-items: center; gap: 9px; width: 100%; min-height: 44px; padding: 0; background: none; border: 0; text-align: left; }
@@ -1313,6 +1346,7 @@ body { margin: 0; background: var(--bg) url("${pattern("6FA0F0", ".07")}") top c
 .room-sheet-foot .btn { width: 100%; }
 
 .banner { margin-top: 12px; padding: 10px 12px; border-radius: 10px; border: 1.5px solid var(--z-yellow); background: var(--surface); font-size: 15px; }
+.landing.compact { padding: 14px 8px 0; }
 .landing { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 22px 8px 4px; text-align: center; }
 .empty { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 36px 8px; text-align: center; }
 
