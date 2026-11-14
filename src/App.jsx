@@ -48,6 +48,10 @@ function zoneOf(room) {
   return "other";
 }
 
+const ZONES = [
+  ["red", "Red"], ["yellow", "Yellow"], ["green", "Green"], ["peds", "Peds"], ["other", "Cabinets and other"],
+];
+
 function photosOf(row) {
   if (row.photo_urls && row.photo_urls.length > 0) return row.photo_urls;
   if (row.photo_url) return [row.photo_url];
@@ -255,6 +259,11 @@ const Icon = {
       </g>
     </svg>
   ),
+  check: (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M5 12.5l4.5 4.5L19 7.5" />
+    </svg>
+  ),
   camera: (
     <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M4 8h3l1.5-2h7L17 8h3v11H4z" /><circle cx="12" cy="13" r="3.5" />
@@ -326,6 +335,63 @@ function ConfirmSheet({ ask, onAnswer }) {
         <div className="row-btns">
           <button className="btn ghost" onClick={() => onAnswer(false)}>Cancel</button>
           <button className={`btn ${ask.danger ? "danger" : ""}`} autoFocus onClick={() => onAnswer(true)}>{ask.confirm}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RoomSheet({ rooms, picked, onChange, onClose }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden"; // the page behind stays put while the panel scrolls
+    return () => { window.removeEventListener("keydown", onKey); document.body.style.overflow = prev; };
+  }, []);
+
+  const toggle = (room) => onChange(picked.includes(room) ? picked.filter((r) => r !== room) : [...picked, room]);
+
+  return (
+    <div className="scrim" onClick={onClose}>
+      <div className="sheet room-sheet" role="dialog" aria-modal="true" aria-label="Filter by room" onClick={(e) => e.stopPropagation()}>
+        <div className="room-sheet-head">
+          <h2>Filter by room</h2>
+          {picked.length > 0 && <button className="link" onClick={() => onChange([])}>Clear all</button>}
+        </div>
+        <div className="rooms">
+          {ZONES.map(([zone, label]) => {
+            const inZone = rooms.filter((r) => zoneOf(r) === zone);
+            if (inZone.length === 0) return null;
+            const allOn = inZone.every((r) => picked.includes(r));
+            const toggleZone = () =>
+              onChange(allOn ? picked.filter((r) => !inZone.includes(r)) : uniq([...picked, ...inZone]));
+            return (
+              <section className="zone" key={zone}>
+                <button className="zone-head" onClick={toggleZone} aria-pressed={allOn}
+                  aria-label={`${allOn ? "Clear" : "Select"} all ${label} rooms`}>
+                  <i className={`dot z-${zone}`} />
+                  <span className="zone-name">{label}</span>
+                  <span className="zone-all">{allOn ? "Clear" : "Select all"}</span>
+                </button>
+                {inZone.map((room) => {
+                  const on = picked.includes(room);
+                  return (
+                    <button key={room} className={`room-row ${on ? "on" : ""}`} role="checkbox" aria-checked={on}
+                      onClick={() => toggle(room)}>
+                      <span className="check" aria-hidden="true">{on && Icon.check}</span>
+                      {room}
+                    </button>
+                  );
+                })}
+              </section>
+            );
+          })}
+        </div>
+        <div className="room-sheet-foot">
+          <button className="btn" onClick={onClose}>
+            {picked.length === 0 ? "Done" : `Show ${picked.length} room${picked.length === 1 ? "" : "s"}`}
+          </button>
         </div>
       </div>
     </div>
@@ -842,8 +908,15 @@ export default function App() {
     notify("Editing locked");
   }
 
-  const toggleRoom = (room) =>
-    setRoomFilter((prev) => (prev.includes(room) ? prev.filter((r) => r !== room) : [...prev, room]));
+  // One tag per picked room; a fully picked zone collapses into a single "All Peds rooms" tag.
+  const pickedTags = ZONES.flatMap(([zone, label]) => {
+    const inZone = rooms.filter((r) => zoneOf(r) === zone);
+    const on = inZone.filter((r) => roomFilter.includes(r));
+    if (inZone.length > 1 && on.length === inZone.length) {
+      return [{ zone, label: zone === "other" ? "All cabinets and other" : `All ${label} rooms`, rooms: inZone }];
+    }
+    return on.map((room) => ({ zone, label: room, rooms: [room] }));
+  });
 
   const clearSearch = () => { setQuery(""); searchRef.current && searchRef.current.focus(); };
 
@@ -932,7 +1005,7 @@ export default function App() {
             <span className="searchbox-icon">{Icon.search}</span>
             <input ref={searchRef} className="input search-input" type="search" inputMode="search" enterKeyHint="search"
               placeholder="Search by any name" aria-label="Search items" autoComplete="off" autoCorrect="off"
-              value={query} onChange={(e) => { setQuery(e.target.value); setFilterOpen(false); }} />
+              value={query} onChange={(e) => setQuery(e.target.value)} />
             {query && (
               <button className="searchbox-clear" onClick={clearSearch} aria-label="Clear search">{Icon.close}</button>
             )}
@@ -945,24 +1018,23 @@ export default function App() {
         {screen === "search" && (
           <>
             <div className="filterbar">
-              <button className={`chip ${filterOpen || filtered ? "active" : ""}`} aria-expanded={filterOpen}
-                onClick={() => setFilterOpen((v) => !v)}>
-                {filtered ? `Rooms: ${roomFilter.length} selected` : "Filter by room"}
+              <button className={`chip ${filtered ? "active" : ""}`} aria-haspopup="dialog" onClick={() => setFilterOpen(true)}>
+                {filtered ? `Rooms (${roomFilter.length})` : "Filter by room"}
               </button>
               <button className="chip" onClick={() => { setFavQuery(""); push("favorites"); }}>
                 <span className={`chip-star ${favorites.length > 0 ? "on" : ""}`}>{favorites.length > 0 ? Icon.starOn : Icon.star}</span>
                 Favorites{favorites.length > 0 ? ` (${favorites.length})` : ""}
               </button>
-              {filtered && <button className="link" onClick={() => setRoomFilter([])}>Clear</button>}
             </div>
-            {filterOpen && (
-              <div className="rooms" role="group" aria-label="Rooms">
-                {rooms.map((room) => (
-                  <button key={room} className={`chip ${roomFilter.includes(room) ? "picked" : ""}`}
-                    aria-pressed={roomFilter.includes(room)} onClick={() => toggleRoom(room)}>
-                    <i className={`dot z-${zoneOf(room)}`} />{room}
+            {filtered && (
+              <div className="picked-rooms">
+                {pickedTags.map((tag) => (
+                  <button key={tag.label} className="picked-room" aria-label={`Remove ${tag.label} from the filter`}
+                    onClick={() => setRoomFilter(roomFilter.filter((r) => !tag.rooms.includes(r)))}>
+                    <i className={`dot z-${tag.zone}`} />{tag.label}<span className="picked-x">{Icon.close}</span>
                   </button>
                 ))}
+                {pickedTags.length > 1 && <button className="link" onClick={() => setRoomFilter([])}>Clear all</button>}
               </div>
             )}
 
@@ -1101,6 +1173,9 @@ export default function App() {
           onSignedIn={() => { setSignInOpen(false); notify("Editing unlocked"); }} />
       )}
       {lightbox && <Lightbox photos={lightbox.photos} startIndex={lightbox.index} onClose={() => setLightbox(null)} />}
+      {filterOpen && (
+        <RoomSheet rooms={rooms} picked={roomFilter} onChange={setRoomFilter} onClose={() => setFilterOpen(false)} />
+      )}
       {ask && <ConfirmSheet ask={ask} onAnswer={answer} />}
       {toast && <div className={`toast ${toast.type}`} role="status">{toast.msg}</div>}
     </div>
@@ -1148,7 +1223,8 @@ body { margin: 0; background: var(--bg) url("${pattern("6FA0F0", ".07")}") top c
 .brand { display: flex; align-items: center; gap: 9px; }
 .brand-mark { flex: none; display: block; }
 .brand-site { align-self: flex-end; padding-bottom: 5px; }
-.brand-name { font-size: 20px; font-weight: 700; letter-spacing: -0.01em; }
+.brand-name { font-size: 20px; font-weight: 700; letter-spacing: -0.01em; white-space: nowrap; }
+@media (max-width: 359px) { .brand-site { display: none; } }
 .brand-site { font-size: 14px; color: var(--muted); }
 .bar-actions { display: flex; align-items: center; gap: 8px; }
 .back {
@@ -1210,8 +1286,31 @@ body { margin: 0; background: var(--bg) url("${pattern("6FA0F0", ".07")}") top c
   border: 1.5px solid var(--line); background: var(--surface); font-size: 15px; text-align: left;
 }
 .chip.active { border-color: var(--ink); font-weight: 700; }
-.chip.picked { background: var(--ink); color: var(--on-ink); border-color: var(--ink); }
-.rooms { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.picked-rooms { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin-top: 10px; }
+.picked-room {
+  display: inline-flex; align-items: center; gap: 7px; min-height: 40px; padding: 0 6px 0 11px; border-radius: 8px;
+  border: 1.5px solid var(--line); background: var(--surface); font-size: 15px; font-weight: 700; text-align: left;
+}
+.picked-x { display: flex; color: var(--muted); }
+.picked-x svg { width: 16px; height: 16px; }
+
+/* room picker panel */
+.sheet.room-sheet { display: flex; flex-direction: column; padding: 0; max-height: 86vh; max-height: 86dvh; overflow: hidden; }
+.room-sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 18px 18px 12px; border-bottom: 1px solid var(--line); }
+.rooms { flex: 1; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; padding: 4px 18px 12px; }
+.zone { margin-top: 14px; }
+.zone-head { display: flex; align-items: center; gap: 9px; width: 100%; min-height: 44px; padding: 0; background: none; border: 0; text-align: left; }
+.zone-name { flex: 1; font-size: 14px; font-weight: 700; color: var(--muted); }
+.zone-all { font-size: 14px; font-weight: 700; color: var(--link); }
+.room-row {
+  display: flex; align-items: center; gap: 12px; width: 100%; min-height: 50px; padding: 8px 12px; margin-top: 6px;
+  background: var(--field); border: 1.5px solid var(--line); border-radius: 10px; text-align: left; font-size: 16px;
+}
+.room-row.on { border-color: var(--ink); background: var(--bg); font-weight: 700; }
+.check { flex: none; display: flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 6px; border: 1.5px solid var(--muted); }
+.room-row.on .check { background: var(--ink); border-color: var(--ink); color: var(--on-ink); }
+.room-sheet-foot { padding: 12px 18px calc(14px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); }
+.room-sheet-foot .btn { width: 100%; }
 
 .banner { margin-top: 12px; padding: 10px 12px; border-radius: 10px; border: 1.5px solid var(--z-yellow); background: var(--surface); font-size: 15px; }
 .landing { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 22px 8px 4px; text-align: center; }
