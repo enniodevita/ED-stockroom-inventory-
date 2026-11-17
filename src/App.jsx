@@ -25,6 +25,10 @@ const CACHE_KEY = "itemfinder:items";
 const EMAIL_KEY = "itemfinder:email";
 const ROOM_KEY = "itemfinder:lastRoom";
 const FAVS_KEY = "itemfinder:favorites";
+const LIST_KEY = "itemfinder:supplyList"; // older name, still read once so nothing is lost
+const RUN_KEY = "itemfinder:bundleRun";
+const BUNDLES_KEY = "itemfinder:bundles";
+const SIDES = ["Front", "Back", "Left", "Right"];
 
 /* ───────────────────────── helpers ───────────────────────── */
 
@@ -133,6 +137,68 @@ function bestName(entry, q) {
 
 function locationLabel(row) {
   return row.room + (row.specific ? ` (${row.specific})` : "");
+}
+
+function bitCount(n) {
+  let c = 0;
+  while (n) { n &= n - 1; c++; }
+  return c;
+}
+
+// Works out the smallest set of rooms that together hold every item on the list.
+// Each item: { entry, skip } where skip holds the row ids the user marked "not here".
+// `allowed` limits the search to those rooms; an empty list means every room.
+function planStops(items, roomOrder, allowed = []) {
+  const need = items.map((item) => {
+    const live = item.entry.rows.filter((r) => !item.skip.includes(r.id));
+    return { item, live, rows: allowed.length > 0 ? live.filter((r) => allowed.includes(r.room)) : live };
+  });
+  const missing = need.filter((n) => n.live.length === 0).map((n) => n.item);
+  const outside = need.filter((n) => n.live.length > 0 && n.rows.length === 0).map((n) => ({ item: n.item, rows: n.live }));
+  const todo = need.filter((n) => n.rows.length > 0);
+  if (todo.length === 0) return { stops: [], missing, outside };
+
+  const order = (room) => { const i = roomOrder.indexOf(room); return i === -1 ? 999 : i; };
+  const roomList = uniq(todo.flatMap((n) => n.rows.map((r) => r.room))).sort((a, b) => order(a) - order(b));
+  const bit = new Map(roomList.map((room, i) => [room, i]));
+  const masks = todo.map((n) => n.rows.reduce((m, r) => m | (1 << bit.get(r.room)), 0));
+  const zoneCount = (set) => new Set(roomList.filter((_, i) => (set >> i) & 1).map(zoneOf)).size;
+
+  let best = 0;
+  if (roomList.length <= 18) {
+    // Small enough to try every combination: fewest rooms wins, then fewest colour zones.
+    let bestRooms = Infinity, bestZones = Infinity;
+    for (let set = 1; set < (1 << roomList.length); set++) {
+      const count = bitCount(set);
+      if (count > bestRooms || !masks.every((m) => m & set)) continue;
+      const zones = zoneCount(set);
+      if (count < bestRooms || zones < bestZones) { best = set; bestRooms = count; bestZones = zones; }
+    }
+  } else {
+    // Very many rooms: repeatedly take the room that covers the most remaining items.
+    let left = masks.map((_, i) => i);
+    while (left.length > 0) {
+      let pick = 0, most = -1;
+      roomList.forEach((_, i) => {
+        const n = left.filter((k) => (masks[k] >> i) & 1).length;
+        if (n > most) { most = n; pick = i; }
+      });
+      best |= 1 << pick;
+      left = left.filter((k) => !((masks[k] >> pick) & 1));
+    }
+  }
+
+  const chosen = roomList.filter((_, i) => (best >> i) & 1);
+  const stops = chosen.map((room) => ({ room, items: [] }));
+  for (const n of todo) {
+    const stop = stops.find((st) => n.rows.some((r) => r.room === st.room));
+    stop.items.push({
+      item: n.item,
+      here: n.rows.filter((r) => r.room === stop.room),
+      elsewhere: n.live.filter((r) => r.room !== stop.room),
+    });
+  }
+  return { stops, missing, outside };
 }
 
 /* form <-> database row conversions for a location */
@@ -264,6 +330,11 @@ const Icon = {
       <path d="M5 12.5l4.5 4.5L19 7.5" />
     </svg>
   ),
+  list: (
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 6.5l1.5 1.5L8 5.5M4 12.5l1.5 1.5L8 11.5M4 18.5l1.5 1.5L8 17.5M11.5 7H20M11.5 13H20M11.5 19H20" />
+    </svg>
+  ),
   camera: (
     <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M4 8h3l1.5-2h7L17 8h3v11H4z" /><circle cx="12" cy="13" r="3.5" />
@@ -285,6 +356,54 @@ function Tag({ row }) {
       {row.room}
       {row.specific && <span className="tag-spec">{row.specific}</span>}
     </span>
+  );
+}
+
+function HelpButton({ onClick, label = "What do front, back, left and right mean?" }) {
+  return (
+    <button type="button" className="qmark" aria-label={label} title={label}
+      onClick={(e) => { e.stopPropagation(); onClick(); }}>?</button>
+  );
+}
+
+// A simple floor plan showing what Front / Back / Left / Right mean, as seen walking in through the door.
+function RoomGuide({ highlight, onClose }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  const side = (name) => `guide-side ${highlight === name ? "on" : ""}`;
+  const text = (name) => `guide-label ${highlight === name ? "on" : ""}`;
+  return (
+    <div className="scrim" onClick={onClose}>
+      <div className="sheet" role="dialog" aria-modal="true" aria-label="Room guide" onClick={(e) => e.stopPropagation()}>
+        <h2>{highlight ? `Where “${highlight}” is` : "Front, back, left and right"}</h2>
+        <p className="sheet-body">Directions are as you walk in through the door and face into the room.</p>
+        <svg className="guide" viewBox="0 0 300 330" role="img"
+          aria-label="Floor plan of a square room. The door is on the front wall. Back is the wall opposite the door. Left and right are the side walls as you walk in.">
+          <rect className={side("Back")} x="40" y="20" width="220" height="50" />
+          <rect className={side("Front")} x="40" y="190" width="220" height="50" />
+          <rect className={side("Left")} x="40" y="70" width="62" height="120" />
+          <rect className={side("Right")} x="198" y="70" width="62" height="120" />
+          {/* walls, with a gap in the front wall for the door */}
+          <path className="guide-wall" d="M122 240H40V20H260V240H178" />
+          {/* the door, swung open, and its arc */}
+          <path className="guide-door" d="M122 240V296" />
+          <path className="guide-arc" d="M122 296A56 56 0 0 0 178 240" />
+          <text className={text("Back")} x="150" y="51">Back</text>
+          <text className={text("Front")} x="150" y="221">Front</text>
+          <text className={text("Left")} x="72" y="136">Left</text>
+          <text className={text("Right")} x="228" y="136">Right</text>
+          {/* you, walking in */}
+          <path className="guide-arrow" d="M150 288V258M141 267l9-10 9 10" />
+          <text className="guide-note" x="150" y="318">Door: you walk in here</text>
+        </svg>
+        <div className="row-btns">
+          <button className="btn" onClick={onClose}>Got it</button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -428,6 +547,26 @@ function RoomSheet({ rooms, picked, onChange, onClose }) {
   );
 }
 
+function NameSheet({ title, body, initial, confirmLabel, onSave, onClose }) {
+  const [name, setName] = useState(initial || "");
+  return (
+    <div className="scrim" onClick={onClose}>
+      <form className="sheet" onClick={(e) => e.stopPropagation()}
+        onSubmit={(e) => { e.preventDefault(); if (name.trim()) onSave(name.trim()); }}>
+        <h2>{title}</h2>
+        {body && <p className="sheet-body">{body}</p>}
+        <label className="label" htmlFor="bundle-name">Name</label>
+        <input id="bundle-name" className="input" value={name} placeholder="e.g. Wound cleaning" autoComplete="off" autoFocus
+          onChange={(e) => setName(e.target.value)} />
+        <div className="row-btns">
+          <button type="button" className="btn ghost" onClick={onClose}>Cancel</button>
+          <button type="submit" className="btn" disabled={!name.trim()}>{confirmLabel}</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 function SignInSheet({ onClose, onSignedIn }) {
   const [email, setEmail] = useState(() => store(EMAIL_KEY) || "");
   const [password, setPassword] = useState("");
@@ -469,7 +608,7 @@ function SignInSheet({ onClose, onSignedIn }) {
 
 /* ───────────────────────── add / edit form ───────────────────────── */
 
-function ItemForm({ mode, initial, entries, saving, onPickExisting, onSubmit, onCancel, onDelete, onOpenPhotos }) {
+function ItemForm({ mode, initial, entries, saving, onPickExisting, onSubmit, onCancel, onDelete, onOpenPhotos, onHelp }) {
   const [names, setNames] = useState(initial.names.length ? initial.names : [""]);
   const [notes, setNotes] = useState(initial.notes || "");
   const [kept, setKept] = useState(initial.photos || []);
@@ -541,7 +680,7 @@ function ItemForm({ mode, initial, entries, saving, onPickExisting, onSubmit, on
       </section>
 
       <section className="field">
-        <span className="label">{locs.length > 1 ? "Locations" : "Location"}</span>
+        <span className="label with-help">{locs.length > 1 ? "Locations" : "Location"} <HelpButton onClick={() => onHelp(null)} /></span>
         {locs.map((loc, i) => (
           <div className="loc-edit" key={loc.key}>
             <i className={`loc-bar z-${zoneOf(loc.room === OTHER ? loc.custom : loc.room)}`} />
@@ -647,6 +786,23 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [showAll, setShowAll] = useState(false);
   const [favQuery, setFavQuery] = useState("");
+  // The bundle being worked on, and the saved bundles, are kept on this phone or computer only, like favorites.
+  const [run, setRun] = useState(() => {
+    try {
+      const saved = JSON.parse(store(RUN_KEY) || "null");
+      if (saved && Array.isArray(saved.items)) return { items: saved.items, rooms: saved.rooms || [], active: saved.active || null };
+      const old = JSON.parse(store(LIST_KEY) || "[]");
+      return { items: Array.isArray(old) ? old : [], rooms: [], active: null };
+    } catch { return { items: [], rooms: [], active: null }; }
+  });
+  const [bundles, setBundles] = useState(() => {
+    try { const b = JSON.parse(store(BUNDLES_KEY) || "[]"); return Array.isArray(b) ? b : []; } catch { return []; }
+  });
+  const [bundleFilterOpen, setBundleFilterOpen] = useState(false);
+  const [naming, setNaming] = useState(false);
+  const [listQuery, setListQuery] = useState("");
+  const [guide, setGuide] = useState(null); // { side } while the room guide is open
+  const listSearchRef = useRef(null);
   const [roomFilter, setRoomFilter] = useState([]);
   const [filterOpen, setFilterOpen] = useState(false);
   const [detailIds, setDetailIds] = useState([]);
@@ -682,6 +838,8 @@ export default function App() {
 
   useEffect(() => {
     document.title = "Item Finder – Stamford ED";
+    // After a refresh the app restarts on the search screen, so mark this history entry as the start.
+    window.history.replaceState({ depth: 0 }, "");
     fetchRows();
     supabase.auth.getSession().then(({ data }) => setSession(data ? data.session : null));
     const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => setSession(s));
@@ -791,6 +949,95 @@ export default function App() {
       .sort((a, b) => a.score - b.score || a.entry.names[0].localeCompare(b.entry.names[0]))
       .map((x) => x.entry);
   }, [favorites, fq]);
+
+  /* bundle search */
+  const saveRun = (next) => { setRun(next); store(RUN_KEY, JSON.stringify(next)); };
+  const saveBundles = (next) => { setBundles(next); store(BUNDLES_KEY, JSON.stringify(next)); };
+  const list = run.items;
+  const saveList = (items) => saveRun({ ...run, items });
+  const listItems = useMemo(() => {
+    const seen = new Set();
+    const out = [];
+    for (const raw of list) {
+      const entry = entries.find((e) => e.rows.some((r) => raw.ids.includes(r.id)));
+      if (!entry || seen.has(entry)) continue;
+      seen.add(entry);
+      out.push({ raw, entry, done: !!raw.done, skip: raw.skip || [] });
+    }
+    return out;
+  }, [list, entries]);
+  const onList = (entry) => listItems.some((x) => x.entry === entry);
+  const addToList = (entry) => {
+    if (!onList(entry)) saveList([...list, { ids: entry.rows.map((r) => r.id), done: false, skip: [] }]);
+  };
+  const removeFromList = (entry) => saveList(list.filter((raw) => !entry.rows.some((r) => raw.ids.includes(r.id))));
+  const patchListItem = (item, patch) => saveList(list.map((raw) => (raw === item.raw ? { ...raw, ...patch } : raw)));
+
+  const plan = useMemo(() => planStops(listItems.filter((x) => !x.done), rooms, run.rooms), [listItems, rooms, run.rooms]);
+  const collected = listItems.filter((x) => x.done);
+  const lq = listQuery.trim().toLowerCase();
+  const listMatches = useMemo(() => {
+    if (!lq) return [];
+    return entries
+      .map((entry) => ({ entry, score: matchScore(entry, lq) }))
+      .filter((x) => x.score !== Infinity)
+      .sort((a, b) => a.score - b.score || a.entry.names[0].localeCompare(b.entry.names[0]))
+      .slice(0, 8)
+      .map((x) => x.entry);
+  }, [entries, lq]);
+
+  function notHere(item, room) {
+    const ids = item.entry.rows.filter((r) => r.room === room).map((r) => r.id);
+    patchListItem(item, { skip: uniq([...item.skip, ...ids]) });
+  }
+  const skippedRooms = (item) => uniq(item.entry.rows.filter((r) => item.skip.includes(r.id)).map((r) => r.room));
+
+  // saved bundles
+  const entryFor = (ids) => entries.find((e) => e.rows.some((r) => ids.includes(r.id)));
+  const signature = (idLists, roomList) =>
+    uniq(idLists.map(entryFor).filter(Boolean).map((e) => e.rows[0].id)).sort().join(",") + "|" + [...roomList].sort().join(",");
+  const activeBundle = bundles.find((b) => b.id === run.active) || null;
+  const dirty = !!activeBundle && signature(activeBundle.items, activeBundle.rooms) !== signature(list.map((x) => x.ids), run.rooms);
+
+  function saveBundle(name) {
+    const items = listItems.map((x) => x.entry.rows.map((r) => r.id));
+    const existing = bundles.find((b) => b.name.toLowerCase() === name.toLowerCase());
+    const id = existing ? existing.id : `b${Date.now()}`;
+    const saved = { id, name, items, rooms: run.rooms };
+    saveBundles(existing ? bundles.map((b) => (b.id === id ? saved : b)) : [...bundles, saved]);
+    saveRun({ ...run, active: id });
+    setNaming(false);
+    notify(existing ? `Updated “${name}”` : `Saved “${name}”`);
+  }
+
+  async function openBundle(bundle) {
+    if (listItems.length > 0 && (!activeBundle || dirty)) {
+      const ok = await confirm({
+        title: `Open “${bundle.name}”?`,
+        body: activeBundle ? `Your unsaved changes to “${activeBundle.name}” will be lost.` : "The items on screen now are not saved as a bundle and will be replaced.",
+        confirm: "Open bundle",
+      });
+      if (!ok) return;
+    }
+    saveRun({ items: bundle.items.map((ids) => ({ ids, done: false, skip: [] })), rooms: bundle.rooms || [], active: bundle.id });
+    window.scrollTo(0, 0);
+  }
+
+  async function deleteBundle(bundle) {
+    const ok = await confirm({ title: `Delete the bundle “${bundle.name}”?`, body: "This cannot be undone.", confirm: "Delete bundle", danger: true });
+    if (!ok) return;
+    saveBundles(bundles.filter((b) => b.id !== bundle.id));
+    if (run.active === bundle.id) saveRun({ ...run, active: null });
+  }
+
+  async function clearList() {
+    const ok = await confirm({
+      title: "Clear these items?",
+      body: activeBundle ? `The saved bundle “${activeBundle.name}” is kept.` : "This removes every item on this screen.",
+      confirm: "Clear items", danger: true,
+    });
+    if (ok) saveRun({ items: [], rooms: [], active: null });
+  }
 
   const shownRows = (entry) => (roomFilter.length === 0 ? entry.rows : entry.rows.filter((r) => roomFilter.includes(r.room)));
 
@@ -939,14 +1186,17 @@ export default function App() {
   }
 
   // One tag per picked room; a fully picked zone collapses into a single "All Peds rooms" tag.
-  const pickedTags = ZONES.flatMap(([zone, label]) => {
+  const tagsFor = (filter) => ZONES.flatMap(([zone, label]) => {
     const inZone = rooms.filter((r) => zoneOf(r) === zone);
-    const on = inZone.filter((r) => roomFilter.includes(r));
+    const on = inZone.filter((r) => filter.includes(r));
     if (inZone.length > 1 && on.length === inZone.length) {
       return [{ zone, label: zone === "other" ? "All cabinets and other" : `All ${label} rooms`, rooms: inZone }];
     }
     return on.map((room) => ({ zone, label: room, rooms: [room] }));
   });
+  const pickedTags = tagsFor(roomFilter);
+  const bundleTags = tagsFor(run.rooms);
+  const setBundleRooms = (next) => saveRun({ ...run, rooms: next });
 
   const clearSearch = () => { setQuery(""); searchRef.current && searchRef.current.focus(); };
 
@@ -1026,6 +1276,18 @@ export default function App() {
               value={favQuery} onChange={(e) => setFavQuery(e.target.value)} />
             {favQuery && (
               <button className="searchbox-clear" onClick={() => setFavQuery("")} aria-label="Clear search">{Icon.close}</button>
+            )}
+          </div>
+        )}
+
+        {screen === "list" && (
+          <div className="searchbox">
+            <span className="searchbox-icon">{Icon.search}</span>
+            <input ref={listSearchRef} className="input search-input" type="search" inputMode="search" enterKeyHint="search"
+              placeholder="Add an item" aria-label="Add an item to the list" autoComplete="off" autoCorrect="off"
+              value={listQuery} onChange={(e) => setListQuery(e.target.value)} />
+            {listQuery && (
+              <button className="searchbox-clear" onClick={() => setListQuery("")} aria-label="Clear search">{Icon.close}</button>
             )}
           </div>
         )}
@@ -1121,6 +1383,202 @@ export default function App() {
           </>
         )}
 
+        {/* ── supply list ── */}
+        {screen === "list" && lq && (
+          <>
+            {listMatches.length === 0 && <div className="empty"><p>Nothing matches “{listQuery.trim()}”.</p></div>}
+            <ul className="results">
+              {listMatches.map((entry) => {
+                const main = bestName(entry, lq);
+                const added = onList(entry);
+                return (
+                  <li key={entry.rows[0].id} className="result">
+                    <button className="result-main pad" disabled={added}
+                      onClick={() => { addToList(entry); setListQuery(""); listSearchRef.current && listSearchRef.current.focus(); }}>
+                      <span className="result-text">
+                        <span className="result-name"><Highlight text={main} q={lq} /></span>
+                        {entry.names.length > 1 && <span className="result-also">{entry.names.filter((n) => n !== main).join(", ")}</span>}
+                      </span>
+                      <span className={`add-pill ${added ? "done" : ""}`}>{added ? "On list" : "Add"}</span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </>
+        )}
+        {screen === "list" && !lq && (
+          <>
+            <h1 className="page-title">{activeBundle ? activeBundle.name : "Bundle search"}</h1>
+            {activeBundle && <p className="aka">Saved bundle{dirty ? ", with unsaved changes" : ""}</p>}
+            {listItems.length === 0 && (
+              <div className="empty">
+                <p>No items yet.</p>
+                <p className="muted">Search above and tap each item you need. The app works out the fewest rooms to visit.</p>
+              </div>
+            )}
+            {listItems.length > 0 && (
+              <div className="filterbar bundle-filter">
+                <button className={`chip ${run.rooms.length > 0 ? "active" : ""}`} aria-haspopup="dialog" onClick={() => setBundleFilterOpen(true)}>
+                  {run.rooms.length > 0 ? `Rooms (${run.rooms.length})` : "Filter by room"}
+                </button>
+              </div>
+            )}
+            {listItems.length > 0 && run.rooms.length > 0 && (
+              <div className="picked-rooms">
+                {bundleTags.map((tag) => (
+                  <button key={tag.label} className="picked-room" aria-label={`Remove ${tag.label} from the filter`}
+                    onClick={() => setBundleRooms(run.rooms.filter((r) => !tag.rooms.includes(r)))}>
+                    <i className={`dot z-${tag.zone}`} />{tag.label}<span className="picked-x">{Icon.close}</span>
+                  </button>
+                ))}
+                {bundleTags.length > 1 && <button className="link" onClick={() => setBundleRooms([])}>Clear all</button>}
+              </div>
+            )}
+            {plan.stops.length > 0 && (
+              <p className="run-summary">
+                {plan.stops.reduce((n, st) => n + st.items.length, 0)} to collect in {plan.stops.length} room{plan.stops.length === 1 ? "" : "s"}
+                {run.rooms.length > 0 ? ", using only the selected rooms" : ""}
+              </p>
+            )}
+
+            {plan.stops.map((stop, i) => (
+              <section className="stop" key={stop.room}>
+                <header className="stop-head">
+                  <i className={`loc-bar z-${zoneOf(stop.room)}`} />
+                  <span className="stop-num">{i + 1}</span>
+                  <h2 className="stop-room">{stop.room}</h2>
+                </header>
+                <ul>
+                  {stop.items.map(({ item, here, elsewhere }) => {
+                    const name = item.entry.names[0];
+                    const spots = uniq(here.map((r) => r.specific).filter(Boolean));
+                    const skipped = skippedRooms(item);
+                    return (
+                      <li className="run-item" key={item.entry.rows[0].id}>
+                        <button className="check big" role="checkbox" aria-checked="false" aria-label={`Mark ${name} as collected`}
+                          onClick={() => patchListItem(item, { done: true })} />
+                        <div className="run-text">
+                          <button className="run-name" onClick={() => openDetail(item.entry)}>{name}</button>
+                          {spots.length > 0 && <span className="run-spot">{spots.join(", ")}</span>}
+                          <span className="run-alt">
+                            {elsewhere.length > 0 ? `Also in ${uniq(elsewhere.map(locationLabel)).join(", ")}` : "Only kept here"}
+                          </span>
+                          {skipped.length > 0 && (
+                            <span className="run-alt">
+                              Marked not in {skipped.join(", ")}.{" "}
+                              <button className="link" onClick={() => patchListItem(item, { skip: [] })}>Undo</button>
+                            </span>
+                          )}
+                          <button className="link" onClick={() => notHere(item, stop.room)}>Not here</button>
+                        </div>
+                        <button className="run-x" aria-label={`Remove ${name} from the list`} onClick={() => removeFromList(item.entry)}>{Icon.close}</button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </section>
+            ))}
+
+            {plan.outside.length > 0 && (
+              <section className="stop">
+                <header className="stop-head">
+                  <i className="loc-bar z-other" />
+                  <h2 className="stop-room pad">Not in the selected rooms</h2>
+                </header>
+                <ul>
+                  {plan.outside.map(({ item, rows: kept }) => (
+                    <li className="run-item" key={item.entry.rows[0].id}>
+                      <div className="run-text">
+                        <button className="run-name" onClick={() => openDetail(item.entry)}>{item.entry.names[0]}</button>
+                        <span className="run-alt">Kept in {uniq(kept.map(locationLabel)).join(", ")}</span>
+                      </div>
+                      <button className="run-x" aria-label={`Remove ${item.entry.names[0]} from the list`} onClick={() => removeFromList(item.entry)}>{Icon.close}</button>
+                    </li>
+                  ))}
+                </ul>
+                <div className="stop-foot"><button className="link" onClick={() => setBundleRooms([])}>Search every room</button></div>
+              </section>
+            )}
+
+            {plan.missing.length > 0 && (
+              <section className="stop">
+                <header className="stop-head">
+                  <i className="loc-bar z-other" />
+                  <h2 className="stop-room pad">No other location</h2>
+                </header>
+                <ul>
+                  {plan.missing.map((item) => (
+                    <li className="run-item" key={item.entry.rows[0].id}>
+                      <div className="run-text">
+                        <button className="run-name" onClick={() => openDetail(item.entry)}>{item.entry.names[0]}</button>
+                        <span className="run-alt">Marked not in {skippedRooms(item).join(", ")}, and it is not kept anywhere else.</span>
+                        <button className="link" onClick={() => patchListItem(item, { skip: [] })}>Check those rooms again</button>
+                      </div>
+                      <button className="run-x" aria-label={`Remove ${item.entry.names[0]} from the list`} onClick={() => removeFromList(item.entry)}>{Icon.close}</button>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
+
+            {collected.length > 0 && (
+              <section className="stop collected">
+                <header className="stop-head"><h2 className="stop-room pad">Collected</h2></header>
+                <ul>
+                  {collected.map((item) => (
+                    <li className="run-item" key={item.entry.rows[0].id}>
+                      <button className="check big on" role="checkbox" aria-checked="true" aria-label={`Mark ${item.entry.names[0]} as not collected`}
+                        onClick={() => patchListItem(item, { done: false })}>{Icon.check}</button>
+                      <div className="run-text"><span className="run-name struck">{item.entry.names[0]}</span></div>
+                      <button className="run-x" aria-label={`Remove ${item.entry.names[0]} from the list`} onClick={() => removeFromList(item.entry)}>{Icon.close}</button>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
+
+            {listItems.length > 0 && (
+              <div className="bundle-actions">
+                {!activeBundle && <button className="btn wide" onClick={() => setNaming(true)}>Save as bundle</button>}
+                {activeBundle && dirty && (
+                  <>
+                    <button className="btn wide" onClick={() => saveBundle(activeBundle.name)}>Save changes to “{activeBundle.name}”</button>
+                    <button className="btn ghost wide" onClick={() => setNaming(true)}>Save as a new bundle</button>
+                  </>
+                )}
+                <button className="btn danger-ghost wide" onClick={clearList}>Clear items</button>
+              </div>
+            )}
+
+            {bundles.length > 0 && (
+              <>
+                <h2 className="section">Saved bundles</h2>
+                <ul className="results bundles">
+                  {bundles.map((b) => {
+                    const count = uniq(b.items.map(entryFor).filter(Boolean)).length;
+                    const open = activeBundle && activeBundle.id === b.id;
+                    return (
+                      <li key={b.id} className={`result ${open ? "is-open" : ""}`}>
+                        <button className="result-main pad" onClick={() => openBundle(b)}>
+                          <span className="result-text">
+                            <span className="result-name">{b.name}</span>
+                            <span className="result-also">
+                              {count} item{count === 1 ? "" : "s"}, {(b.rooms || []).length > 0 ? `filtered to ${b.rooms.length} room${b.rooms.length === 1 ? "" : "s"}` : "all rooms"}
+                              {open ? ". Open now" : ""}
+                            </span>
+                          </span>
+                        </button>
+                        <button className="star" aria-label={`Delete the bundle ${b.name}`} onClick={() => deleteBundle(b)}>{Icon.close}</button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </>
+            )}
+          </>
+        )}
+
         {/* ── detail ── */}
         {screen === "detail" && !detail && (
           <div className="empty"><p>This item is no longer in the list.</p></div>
@@ -1144,9 +1602,16 @@ export default function App() {
                   <i className={`loc-bar z-${zoneOf(r.room)}`} />
                   <span className="plate-room">{r.room}</span>
                   {r.specific && <span className="plate-spec">{r.specific}</span>}
+                  {SIDES.includes(r.specific) && (
+                    <HelpButton label={`Where is “${r.specific}” in a room?`} onClick={() => setGuide({ side: r.specific })} />
+                  )}
                 </li>
               ))}
             </ul>
+            <button className={`btn ghost wide ${onList(detail) ? "is-on" : ""}`} aria-pressed={onList(detail)}
+              onClick={() => (onList(detail) ? removeFromList(detail) : (addToList(detail), notify("Added to your bundle")))}>
+              {Icon.list} {onList(detail) ? "In your bundle. Tap to remove" : "Add to bundle"}
+            </button>
 
             {detail.notes && (
               <>
@@ -1196,6 +1661,7 @@ export default function App() {
             onCancel={() => (screen === "edit" ? swap("detail") : back())}
             onDelete={() => detail && deleteEntry(detail)}
             onOpenPhotos={(photos, index) => setLightbox({ photos, index })}
+            onHelp={(side) => setGuide({ side })}
           />
         )}
       </main>
@@ -1204,7 +1670,21 @@ export default function App() {
         <SignInSheet onClose={() => setSignInOpen(false)}
           onSignedIn={() => { setSignInOpen(false); notify("Editing unlocked"); }} />
       )}
+      {screen === "search" && (
+        <button className="fab" onClick={() => { setListQuery(""); push("list"); }}>
+          {Icon.list} Bundle search{listItems.length > 0 ? ` (${listItems.length})` : ""}
+        </button>
+      )}
+      {guide && <RoomGuide highlight={guide.side} onClose={() => setGuide(null)} />}
       {lightbox && <Lightbox photos={lightbox.photos} startIndex={lightbox.index} onClose={() => setLightbox(null)} />}
+      {bundleFilterOpen && (
+        <RoomSheet rooms={rooms} picked={run.rooms} onChange={setBundleRooms} onClose={() => setBundleFilterOpen(false)} />
+      )}
+      {naming && (
+        <NameSheet title="Save as a bundle" confirmLabel="Save bundle"
+          body="Saves these items and the room filter under a name, so you can open them again later. Using a name you already have replaces that bundle."
+          initial="" onSave={saveBundle} onClose={() => setNaming(false)} />
+      )}
       {filterOpen && (
         <RoomSheet rooms={rooms} picked={roomFilter} onChange={setRoomFilter} onClose={() => setFilterOpen(false)} />
       )}
@@ -1238,7 +1718,7 @@ body { margin: 0; background: var(--bg) url("${pattern("6FA0F0", ".07")}") top c
   font-family: "Atkinson Hyperlegible", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   color: var(--ink); min-height: 100vh; min-height: 100dvh;
   max-width: 560px; margin: 0 auto; font-size: 16px; line-height: 1.4;
-  padding-bottom: calc(32px + env(safe-area-inset-bottom));
+  padding-bottom: calc(96px + env(safe-area-inset-bottom));
 }
 .app :where(button, input, select, textarea) { font: inherit; color: inherit; }
 .app :where(button) { cursor: pointer; -webkit-tap-highlight-color: transparent; }
@@ -1429,6 +1909,58 @@ body { margin: 0; background: var(--bg) url("${pattern("6FA0F0", ".07")}") top c
 .form-actions .btn { flex: 1; }
 .row-btns { display: flex; gap: 10px; margin-top: 18px; }
 .row-btns .btn { flex: 1; }
+
+/* help button + room guide */
+.qmark {
+  position: relative; flex: none; display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px;
+  border-radius: 50%; border: 1.5px solid var(--muted); background: none; color: var(--muted); font-size: 15px; font-weight: 700; line-height: 1; padding: 0;
+}
+.qmark::after { content: ""; position: absolute; inset: -8px; }
+.label.with-help { display: flex; align-items: center; gap: 10px; }
+.guide { display: block; width: 100%; max-width: 320px; margin: 14px auto 0; }
+.guide-side { fill: var(--field); }
+.guide-side.on { fill: var(--link); fill-opacity: .3; }
+.guide-wall { fill: none; stroke: var(--ink); stroke-width: 4; stroke-linejoin: miter; }
+.guide-door { fill: none; stroke: var(--ink); stroke-width: 4; stroke-linecap: round; }
+.guide-arc { fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 4 4; }
+.guide-arrow { fill: none; stroke: var(--link); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+.guide-label { fill: var(--muted); font-size: 17px; font-weight: 700; text-anchor: middle; }
+.guide-label.on { fill: var(--ink); }
+.guide-note { fill: var(--muted); font-size: 13px; text-anchor: middle; }
+
+/* bundle search */
+.bundle-filter { margin-top: 12px; }
+.bundle-actions { display: flex; flex-direction: column; margin-top: 8px; }
+.stop-foot { padding: 4px 14px 12px; }
+.result.is-open { border-color: var(--ink); }
+.fab {
+  position: fixed; z-index: 20; right: max(16px, calc(50vw - 264px)); bottom: calc(18px + env(safe-area-inset-bottom));
+  display: inline-flex; align-items: center; gap: 8px; min-height: 50px; padding: 0 18px; border-radius: 25px;
+  border: 1.5px solid var(--ink); background: var(--ink); color: var(--on-ink); font-weight: 700; box-shadow: 0 6px 18px rgba(0,0,0,.45);
+}
+.btn.is-on { border-color: var(--ink); }
+.result-main.pad { padding: 12px 12px 12px 14px; }
+.result-main:disabled { opacity: 1; cursor: default; }
+.add-pill { flex: none; padding: 6px 14px; border-radius: 16px; background: var(--ink); color: var(--on-ink); font-weight: 700; font-size: 15px; }
+.add-pill.done { background: none; color: var(--muted); border: 1.5px solid var(--line); }
+.run-summary { color: var(--muted); margin-top: 4px !important; }
+.stop { margin-top: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.stop-head { display: flex; align-items: center; gap: 12px; min-height: 54px; border-bottom: 1px solid var(--line); }
+.stop-num { flex: none; display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 50%; background: var(--ink); color: var(--on-ink); font-weight: 700; font-size: 15px; }
+.stop-room { font-size: 19px; line-height: 1.2; padding: 10px 12px 10px 0; }
+.stop-room.pad { padding-left: 14px; }
+.stop.collected .stop-room { font-size: 14px; color: var(--muted); }
+.run-item { display: flex; align-items: flex-start; gap: 12px; padding: 12px 6px 12px 14px; }
+.run-item + .run-item { border-top: 1px solid var(--line); }
+.check.big { width: 30px; height: 30px; border-radius: 8px; margin-top: 1px; background: none; padding: 0; color: var(--on-ink); }
+.check.big.on { background: var(--ink); border-color: var(--ink); }
+.check.big svg { width: 18px; height: 18px; }
+.run-text { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; flex: 1; min-width: 0; }
+.run-name { background: none; border: 0; padding: 0; font-size: 17px; font-weight: 700; text-align: left; line-height: 1.25; }
+.run-name.struck { text-decoration: line-through; color: var(--muted); font-weight: 400; }
+.run-spot { padding: 2px 9px; border-radius: 6px; background: var(--field); border: 1px solid var(--line); font-weight: 700; font-size: 14px; }
+.run-alt { font-size: 14px; color: var(--muted); line-height: 1.35; }
+.run-x { flex: none; width: 44px; height: 44px; margin-top: -7px; display: flex; align-items: center; justify-content: center; background: none; border: 0; color: var(--muted); }
 
 /* overlays */
 .scrim { position: fixed; inset: 0; z-index: 40; background: rgba(8,13,18,.6); display: flex; align-items: flex-end; justify-content: center; }
