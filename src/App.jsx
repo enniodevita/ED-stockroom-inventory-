@@ -782,19 +782,23 @@ export default function App() {
     try { return JSON.parse(store(FAVS_KEY) || "[]"); } catch { return []; }
   });
 
-  const [screen, setScreen] = useState("search"); // search | detail | edit | add
+  const [screen, setScreen] = useState("search"); // search | detail | edit | add | favorites | list | bundle
   const [query, setQuery] = useState("");
   const [showAll, setShowAll] = useState(false);
   const [favQuery, setFavQuery] = useState("");
-  // The bundle being worked on, and the saved bundles, are kept on this phone or computer only, like favorites.
-  const [run, setRun] = useState(() => {
+  // The new bundle being built, and the saved bundles, are kept on this phone or computer only, like favorites.
+  const [draft, setDraft] = useState(() => {
     try {
       const saved = JSON.parse(store(RUN_KEY) || "null");
-      if (saved && Array.isArray(saved.items)) return { items: saved.items, rooms: saved.rooms || [], active: saved.active || null };
+      if (saved && Array.isArray(saved.items)) {
+        return saved.active ? { items: [], rooms: [] } : { items: saved.items, rooms: saved.rooms || [] };
+      }
       const old = JSON.parse(store(LIST_KEY) || "[]");
-      return { items: Array.isArray(old) ? old : [], rooms: [], active: null };
-    } catch { return { items: [], rooms: [], active: null }; }
+      return { items: Array.isArray(old) ? old : [], rooms: [] };
+    } catch { return { items: [], rooms: [] }; }
   });
+  // An opened saved bundle gets its own working copy, so opening one never touches the new bundle being built.
+  const [openB, setOpenB] = useState(null); // { id, items, rooms }
   const [bundles, setBundles] = useState(() => {
     try { const b = JSON.parse(store(BUNDLES_KEY) || "[]"); return Array.isArray(b) ? b : []; } catch { return []; }
   });
@@ -951,7 +955,14 @@ export default function App() {
   }, [favorites, fq]);
 
   /* bundle search */
-  const saveRun = (next) => { setRun(next); store(RUN_KEY, JSON.stringify(next)); };
+  const inBundle = screen === "bundle" && !!openB;
+  const run = inBundle ? openB : draft;
+  const saveRun = (next) => {
+    if (inBundle) { setOpenB({ ...openB, items: next.items, rooms: next.rooms }); return; }
+    const d = { items: next.items, rooms: next.rooms };
+    setDraft(d);
+    store(RUN_KEY, JSON.stringify(d));
+  };
   const saveBundles = (next) => { setBundles(next); store(BUNDLES_KEY, JSON.stringify(next)); };
   const list = run.items;
   const saveList = (items) => saveRun({ ...run, items });
@@ -962,7 +973,7 @@ export default function App() {
       const entry = entries.find((e) => e.rows.some((r) => raw.ids.includes(r.id)));
       if (!entry || seen.has(entry)) continue;
       seen.add(entry);
-      out.push({ raw, entry, done: !!raw.done, skip: raw.skip || [] });
+      out.push({ raw, entry, done: !!raw.done, skip: [] });
     }
     return out;
   }, [list, entries]);
@@ -973,8 +984,7 @@ export default function App() {
   const removeFromList = (entry) => saveList(list.filter((raw) => !entry.rows.some((r) => raw.ids.includes(r.id))));
   const patchListItem = (item, patch) => saveList(list.map((raw) => (raw === item.raw ? { ...raw, ...patch } : raw)));
 
-  const plan = useMemo(() => planStops(listItems.filter((x) => !x.done), rooms, run.rooms), [listItems, rooms, run.rooms]);
-  const collected = listItems.filter((x) => x.done);
+  const plan = useMemo(() => planStops(listItems, rooms, run.rooms), [listItems, rooms, run.rooms]);
   const lq = listQuery.trim().toLowerCase();
   const listMatches = useMemo(() => {
     if (!lq) return [];
@@ -986,57 +996,43 @@ export default function App() {
       .map((x) => x.entry);
   }, [entries, lq]);
 
-  function notHere(item, room) {
-    const ids = item.entry.rows.filter((r) => r.room === room).map((r) => r.id);
-    patchListItem(item, { skip: uniq([...item.skip, ...ids]) });
-  }
-  const skippedRooms = (item) => uniq(item.entry.rows.filter((r) => item.skip.includes(r.id)).map((r) => r.room));
 
   // saved bundles
   const entryFor = (ids) => entries.find((e) => e.rows.some((r) => ids.includes(r.id)));
   const signature = (idLists, roomList) =>
     uniq(idLists.map(entryFor).filter(Boolean).map((e) => e.rows[0].id)).sort().join(",") + "|" + [...roomList].sort().join(",");
-  const activeBundle = bundles.find((b) => b.id === run.active) || null;
+  const activeBundle = inBundle ? bundles.find((b) => b.id === openB.id) || null : null;
   const dirty = !!activeBundle && signature(activeBundle.items, activeBundle.rooms) !== signature(list.map((x) => x.ids), run.rooms);
 
+  // Saving always ends on the Bundle search screen with nothing left on it but the saved bundles.
   function saveBundle(name) {
     const items = listItems.map((x) => x.entry.rows.map((r) => r.id));
     const existing = bundles.find((b) => b.name.toLowerCase() === name.toLowerCase());
     const id = existing ? existing.id : `b${Date.now()}`;
     const saved = { id, name, items, rooms: run.rooms };
     saveBundles(existing ? bundles.map((b) => (b.id === id ? saved : b)) : [...bundles, saved]);
-    saveRun({ ...run, active: id });
     setNaming(false);
+    setListQuery("");
+    if (inBundle) { setOpenB(null); back(); }
+    else saveRun({ items: [], rooms: [] });
     notify(existing ? `Updated “${name}”` : `Saved “${name}”`);
   }
 
-  async function openBundle(bundle) {
-    if (listItems.length > 0 && (!activeBundle || dirty)) {
-      const ok = await confirm({
-        title: `Open “${bundle.name}”?`,
-        body: activeBundle ? `Your unsaved changes to “${activeBundle.name}” will be lost.` : "The items on screen now are not saved as a bundle and will be replaced.",
-        confirm: "Open bundle",
-      });
-      if (!ok) return;
-    }
-    saveRun({ items: bundle.items.map((ids) => ({ ids, done: false, skip: [] })), rooms: bundle.rooms || [], active: bundle.id });
-    window.scrollTo(0, 0);
+  function openBundle(bundle) {
+    setOpenB({ id: bundle.id, items: bundle.items.map((ids) => ({ ids, done: false, skip: [] })), rooms: bundle.rooms || [] });
+    setListQuery("");
+    push("bundle");
   }
 
   async function deleteBundle(bundle) {
     const ok = await confirm({ title: `Delete the bundle “${bundle.name}”?`, body: "This cannot be undone.", confirm: "Delete bundle", danger: true });
     if (!ok) return;
     saveBundles(bundles.filter((b) => b.id !== bundle.id));
-    if (run.active === bundle.id) saveRun({ ...run, active: null });
   }
 
   async function clearList() {
-    const ok = await confirm({
-      title: "Clear these items?",
-      body: activeBundle ? `The saved bundle “${activeBundle.name}” is kept.` : "This removes every item on this screen.",
-      confirm: "Clear items", danger: true,
-    });
-    if (ok) saveRun({ items: [], rooms: [], active: null });
+    const ok = await confirm({ title: "Clear these items?", body: "This removes every item from the new bundle.", confirm: "Clear items", danger: true });
+    if (ok) saveRun({ items: [], rooms: [] });
   }
 
   const shownRows = (entry) => (roomFilter.length === 0 ? entry.rows : entry.rows.filter((r) => roomFilter.includes(r.room)));
@@ -1280,7 +1276,7 @@ export default function App() {
           </div>
         )}
 
-        {screen === "list" && (
+        {(screen === "list" || screen === "bundle") && (
           <div className="searchbox">
             <span className="searchbox-icon">{Icon.search}</span>
             <input ref={listSearchRef} className="input search-input" type="search" inputMode="search" enterKeyHint="search"
@@ -1384,7 +1380,7 @@ export default function App() {
         )}
 
         {/* ── supply list ── */}
-        {screen === "list" && lq && (
+        {(screen === "list" || screen === "bundle") && lq && (
           <>
             {listMatches.length === 0 && <div className="empty"><p>Nothing matches “{listQuery.trim()}”.</p></div>}
             <ul className="results">
@@ -1393,8 +1389,13 @@ export default function App() {
                 const added = onList(entry);
                 return (
                   <li key={entry.rows[0].id} className="result">
-                    <button className="result-main pad" disabled={added}
+                    <button className="result-main pad-img" disabled={added}
                       onClick={() => { addToList(entry); setListQuery(""); listSearchRef.current && listSearchRef.current.focus(); }}>
+                      {entry.photos.length > 0 ? (
+                        <span className="thumb"><img src={entry.photos[0]} alt="" loading="lazy" /></span>
+                      ) : (
+                        <span className="thumb blank" aria-hidden="true">{main.charAt(0).toUpperCase()}</span>
+                      )}
                       <span className="result-text">
                         <span className="result-name"><Highlight text={main} q={lq} /></span>
                         {entry.names.length > 1 && <span className="result-also">{entry.names.filter((n) => n !== main).join(", ")}</span>}
@@ -1407,14 +1408,24 @@ export default function App() {
             </ul>
           </>
         )}
-        {screen === "list" && !lq && (
+        {(screen === "list" || (screen === "bundle" && inBundle)) && !lq && (
           <>
-            <h1 className="page-title">{activeBundle ? activeBundle.name : "Bundle search"}</h1>
-            {activeBundle && <p className="aka">Saved bundle{dirty ? ", with unsaved changes" : ""}</p>}
+            {inBundle ? (
+              <>
+                <h1 className="page-title">{activeBundle ? activeBundle.name : "Bundle"}</h1>
+                <p className="aka">Saved bundle{dirty ? ", with unsaved changes" : ""}</p>
+              </>
+            ) : (
+              <h1 className="page-title">Bundle search</h1>
+            )}
             {listItems.length === 0 && (
-              <div className="empty">
-                <p>No items yet.</p>
-                <p className="muted">Search above and tap each item you need. The app works out the fewest rooms to visit.</p>
+              <div className={`empty ${inBundle || bundles.length === 0 ? "" : "compact"}`}>
+                {inBundle ? <p>This bundle has no items. Search above to add some.</p> : (
+                  <>
+                    <p>Start a new bundle</p>
+                    <p className="muted">Search above and tap each item you need. The app works out the fewest rooms to visit.</p>
+                  </>
+                )}
               </div>
             )}
             {listItems.length > 0 && (
@@ -1435,12 +1446,6 @@ export default function App() {
                 {bundleTags.length > 1 && <button className="link" onClick={() => setBundleRooms([])}>Clear all</button>}
               </div>
             )}
-            {plan.stops.length > 0 && (
-              <p className="run-summary">
-                {plan.stops.reduce((n, st) => n + st.items.length, 0)} to collect in {plan.stops.length} room{plan.stops.length === 1 ? "" : "s"}
-                {run.rooms.length > 0 ? ", using only the selected rooms" : ""}
-              </p>
-            )}
 
             {plan.stops.map((stop, i) => (
               <section className="stop" key={stop.room}>
@@ -1453,24 +1458,19 @@ export default function App() {
                   {stop.items.map(({ item, here, elsewhere }) => {
                     const name = item.entry.names[0];
                     const spots = uniq(here.map((r) => r.specific).filter(Boolean));
-                    const skipped = skippedRooms(item);
                     return (
                       <li className="run-item" key={item.entry.rows[0].id}>
-                        <button className="check big" role="checkbox" aria-checked="false" aria-label={`Mark ${name} as collected`}
-                          onClick={() => patchListItem(item, { done: true })} />
+                        <button className={`check big ${item.done ? "on" : ""}`} role="checkbox" aria-checked={item.done}
+                          aria-label={`${name} collected`} onClick={() => patchListItem(item, { done: !item.done })}>
+                          {item.done && Icon.check}
+                        </button>
                         <div className="run-text">
                           <button className="run-name" onClick={() => openDetail(item.entry)}>{name}</button>
                           {spots.length > 0 && <span className="run-spot">{spots.join(", ")}</span>}
-                          <span className="run-alt">
-                            {elsewhere.length > 0 ? `Also in ${uniq(elsewhere.map(locationLabel)).join(", ")}` : "Only kept here"}
-                          </span>
-                          {skipped.length > 0 && (
-                            <span className="run-alt">
-                              Marked not in {skipped.join(", ")}.{" "}
-                              <button className="link" onClick={() => patchListItem(item, { skip: [] })}>Undo</button>
-                            </span>
+                          {elsewhere.length > 0 && (
+                            <span className="run-alt">Also in {uniq(elsewhere.map(locationLabel)).join(", ")}</span>
                           )}
-                          <button className="link" onClick={() => notHere(item, stop.room)}>Not here</button>
+                          {elsewhere.length === 0 && <span className="run-alt">Only kept here</span>}
                         </div>
                         <button className="run-x" aria-label={`Remove ${name} from the list`} onClick={() => removeFromList(item.entry)}>{Icon.close}</button>
                       </li>
@@ -1501,71 +1501,36 @@ export default function App() {
               </section>
             )}
 
-            {plan.missing.length > 0 && (
-              <section className="stop">
-                <header className="stop-head">
-                  <i className="loc-bar z-other" />
-                  <h2 className="stop-room pad">No other location</h2>
-                </header>
-                <ul>
-                  {plan.missing.map((item) => (
-                    <li className="run-item" key={item.entry.rows[0].id}>
-                      <div className="run-text">
-                        <button className="run-name" onClick={() => openDetail(item.entry)}>{item.entry.names[0]}</button>
-                        <span className="run-alt">Marked not in {skippedRooms(item).join(", ")}, and it is not kept anywhere else.</span>
-                        <button className="link" onClick={() => patchListItem(item, { skip: [] })}>Check those rooms again</button>
-                      </div>
-                      <button className="run-x" aria-label={`Remove ${item.entry.names[0]} from the list`} onClick={() => removeFromList(item.entry)}>{Icon.close}</button>
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            )}
 
-            {collected.length > 0 && (
-              <section className="stop collected">
-                <header className="stop-head"><h2 className="stop-room pad">Collected</h2></header>
-                <ul>
-                  {collected.map((item) => (
-                    <li className="run-item" key={item.entry.rows[0].id}>
-                      <button className="check big on" role="checkbox" aria-checked="true" aria-label={`Mark ${item.entry.names[0]} as not collected`}
-                        onClick={() => patchListItem(item, { done: false })}>{Icon.check}</button>
-                      <div className="run-text"><span className="run-name struck">{item.entry.names[0]}</span></div>
-                      <button className="run-x" aria-label={`Remove ${item.entry.names[0]} from the list`} onClick={() => removeFromList(item.entry)}>{Icon.close}</button>
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            )}
 
-            {listItems.length > 0 && (
+            {!inBundle && listItems.length > 0 && (
               <div className="bundle-actions">
-                {!activeBundle && <button className="btn wide" onClick={() => setNaming(true)}>Save as bundle</button>}
-                {activeBundle && dirty && (
-                  <>
-                    <button className="btn wide" onClick={() => saveBundle(activeBundle.name)}>Save changes to “{activeBundle.name}”</button>
-                    <button className="btn ghost wide" onClick={() => setNaming(true)}>Save as a new bundle</button>
-                  </>
-                )}
+                <button className="btn wide" onClick={() => setNaming(true)}>Save as bundle</button>
                 <button className="btn danger-ghost wide" onClick={clearList}>Clear items</button>
               </div>
             )}
+            {inBundle && dirty && (
+              <div className="bundle-actions">
+                {activeBundle && listItems.length > 0 && (
+                  <button className="btn wide" onClick={() => saveBundle(activeBundle.name)}>Save changes to “{activeBundle.name}”</button>
+                )}
+                {listItems.length > 0 && <button className="btn ghost wide" onClick={() => setNaming(true)}>Save as a new bundle</button>}
+              </div>
+            )}
 
-            {bundles.length > 0 && (
+            {!inBundle && bundles.length > 0 && (
               <>
                 <h2 className="section">Saved bundles</h2>
                 <ul className="results bundles">
                   {bundles.map((b) => {
                     const count = uniq(b.items.map(entryFor).filter(Boolean)).length;
-                    const open = activeBundle && activeBundle.id === b.id;
                     return (
-                      <li key={b.id} className={`result ${open ? "is-open" : ""}`}>
+                      <li key={b.id} className="result">
                         <button className="result-main pad" onClick={() => openBundle(b)}>
                           <span className="result-text">
                             <span className="result-name">{b.name}</span>
                             <span className="result-also">
                               {count} item{count === 1 ? "" : "s"}, {(b.rooms || []).length > 0 ? `filtered to ${b.rooms.length} room${b.rooms.length === 1 ? "" : "s"}` : "all rooms"}
-                              {open ? ". Open now" : ""}
                             </span>
                           </span>
                         </button>
@@ -1608,10 +1573,6 @@ export default function App() {
                 </li>
               ))}
             </ul>
-            <button className={`btn ghost wide ${onList(detail) ? "is-on" : ""}`} aria-pressed={onList(detail)}
-              onClick={() => (onList(detail) ? removeFromList(detail) : (addToList(detail), notify("Added to your bundle")))}>
-              {Icon.list} {onList(detail) ? "In your bundle. Tap to remove" : "Add to bundle"}
-            </button>
 
             {detail.notes && (
               <>
@@ -1670,7 +1631,7 @@ export default function App() {
         <SignInSheet onClose={() => setSignInOpen(false)}
           onSignedIn={() => { setSignInOpen(false); notify("Editing unlocked"); }} />
       )}
-      {screen === "search" && (
+      {screen === "search" && !q && !showAll && roomFilter.length === 0 && (
         <button className="fab" onClick={() => { setListQuery(""); push("list"); }}>
           {Icon.list} Bundle search{listItems.length > 0 ? ` (${listItems.length})` : ""}
         </button>
@@ -1932,24 +1893,22 @@ body { margin: 0; background: var(--bg) url("${pattern("6FA0F0", ".07")}") top c
 .bundle-filter { margin-top: 12px; }
 .bundle-actions { display: flex; flex-direction: column; margin-top: 8px; }
 .stop-foot { padding: 4px 14px 12px; }
-.result.is-open { border-color: var(--ink); }
+.empty.compact { padding: 20px 8px 8px; }
+.result-main.pad-img { padding: 10px 12px 10px 10px; }
 .fab {
   position: fixed; z-index: 20; right: max(16px, calc(50vw - 264px)); bottom: calc(18px + env(safe-area-inset-bottom));
   display: inline-flex; align-items: center; gap: 8px; min-height: 50px; padding: 0 18px; border-radius: 25px;
   border: 1.5px solid var(--ink); background: var(--ink); color: var(--on-ink); font-weight: 700; box-shadow: 0 6px 18px rgba(0,0,0,.45);
 }
-.btn.is-on { border-color: var(--ink); }
 .result-main.pad { padding: 12px 12px 12px 14px; }
 .result-main:disabled { opacity: 1; cursor: default; }
 .add-pill { flex: none; padding: 6px 14px; border-radius: 16px; background: var(--ink); color: var(--on-ink); font-weight: 700; font-size: 15px; }
 .add-pill.done { background: none; color: var(--muted); border: 1.5px solid var(--line); }
-.run-summary { color: var(--muted); margin-top: 4px !important; }
 .stop { margin-top: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
 .stop-head { display: flex; align-items: center; gap: 12px; min-height: 54px; border-bottom: 1px solid var(--line); }
 .stop-num { flex: none; display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 50%; background: var(--ink); color: var(--on-ink); font-weight: 700; font-size: 15px; }
 .stop-room { font-size: 19px; line-height: 1.2; padding: 10px 12px 10px 0; }
 .stop-room.pad { padding-left: 14px; }
-.stop.collected .stop-room { font-size: 14px; color: var(--muted); }
 .run-item { display: flex; align-items: flex-start; gap: 12px; padding: 12px 6px 12px 14px; }
 .run-item + .run-item { border-top: 1px solid var(--line); }
 .check.big { width: 30px; height: 30px; border-radius: 8px; margin-top: 1px; background: none; padding: 0; color: var(--on-ink); }
@@ -1957,7 +1916,6 @@ body { margin: 0; background: var(--bg) url("${pattern("6FA0F0", ".07")}") top c
 .check.big svg { width: 18px; height: 18px; }
 .run-text { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; flex: 1; min-width: 0; }
 .run-name { background: none; border: 0; padding: 0; font-size: 17px; font-weight: 700; text-align: left; line-height: 1.25; }
-.run-name.struck { text-decoration: line-through; color: var(--muted); font-weight: 400; }
 .run-spot { padding: 2px 9px; border-radius: 6px; background: var(--field); border: 1px solid var(--line); font-weight: 700; font-size: 14px; }
 .run-alt { font-size: 14px; color: var(--muted); line-height: 1.35; }
 .run-x { flex: none; width: 44px; height: 44px; margin-top: -7px; display: flex; align-items: center; justify-content: center; background: none; border: 0; color: var(--muted); }
